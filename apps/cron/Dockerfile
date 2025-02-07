@@ -15,8 +15,8 @@ COPY ../shared ../shared
 RUN mkdir -p node_modules/.cache .build-cache
 
 # Build with proper cache mounts
-RUN --mount=type=cache,id=npm-cache,target=/app/node_modules/.cache \
-    --mount=type=cache,id=build-cache,target=/app/.build-cache \
+RUN --mount=type=cache,id=postiz-npm-cache,target=/app/node_modules/.cache \
+    --mount=type=cache,id=postiz-build-cache,target=/app/.build-cache \
     npm run build
 
 EXPOSE 5000
