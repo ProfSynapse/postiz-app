@@ -8,19 +8,19 @@ This is a reorganized monorepo structure optimized for Railway deployment.
 apps/
 ├── shared/           # Shared libraries and dependencies
 ├── frontend/         # Next.js frontend application
-├── backend/          # NestJS backend API
-├── workers/          # Background workers
-└── cron/            # Scheduled tasks
+├── backend/         # NestJS backend API
+├── workers/         # Background workers
+└── cron/           # Scheduled tasks
 ```
 
 ## Railway Deployment
 
-Each service uses a multi-stage Docker build for optimal production images. Here's how to deploy each service:
+Each service uses a multi-stage Docker build with a build script to handle shared dependencies. Here's how to deploy each service:
 
 ### Frontend Service
 ```bash
 # Root Directory: /apps/frontend
-Build Command: docker build -t postiz-frontend .
+Build Command: ./build.sh    # For Railway (Linux)
 Start Command: npm run start:prod
 Port: 6000
 Environment Variables:
@@ -31,7 +31,7 @@ Environment Variables:
 ### Backend Service
 ```bash
 # Root Directory: /apps/backend
-Build Command: docker build -t postiz-backend .
+Build Command: ./build.sh    # For Railway (Linux)
 Start Command: npm run start:prod
 Port: 8080
 Environment Variables:
@@ -42,7 +42,7 @@ Environment Variables:
 ### Workers Service
 ```bash
 # Root Directory: /apps/workers
-Build Command: docker build -t postiz-workers .
+Build Command: ./build.sh    # For Railway (Linux)
 Start Command: npm run start:prod
 Port: 4000
 Environment Variables:
@@ -53,7 +53,7 @@ Environment Variables:
 ### Cron Service
 ```bash
 # Root Directory: /apps/cron
-Build Command: docker build -t postiz-cron .
+Build Command: ./build.sh    # For Railway (Linux)
 Start Command: npm run start:prod
 Port: 5000
 Environment Variables:
@@ -61,29 +61,53 @@ Environment Variables:
   - PORT=5000
 ```
 
-## Multi-Stage Build Process
+## Build Process
 
-Each service uses a three-stage Docker build:
+Each service uses a build script and multi-stage Docker build:
 
-1. Base Stage:
+1. Build Scripts:
+
+For Railway (Linux):
+```bash
+#!/bin/bash
+# Copy shared libraries
+cp -r ../shared ./shared
+
+# Build Docker image
+docker build -t postiz-service .
+
+# Clean up
+rm -rf ./shared
+```
+
+For Local Development (Windows):
+```batch
+@echo off
+echo Copying shared libraries...
+xcopy /E /I /Y ..\shared shared
+
+echo Building Docker image...
+docker build -t postiz-service .
+
+echo Cleaning up...
+rmdir /S /Q shared
+```
+
+2. Multi-Stage Dockerfile:
 ```dockerfile
+# Base stage
 FROM node:20.17-alpine3.19 AS base
 WORKDIR /app
-```
 
-2. Builder Stage:
-```dockerfile
+# Builder stage
 FROM base AS builder
 COPY package.json package-lock.json ./
-COPY ../shared/package.json ../shared/
+COPY shared/package.json ./shared/
 RUN npm install
 COPY . .
-COPY ../shared ../shared
 RUN npm run build
-```
 
-3. Final Stage:
-```dockerfile
+# Final stage
 FROM base
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
@@ -91,10 +115,10 @@ COPY --from=builder /app/package.json ./package.json
 ```
 
 Benefits:
+- Proper handling of shared dependencies
+- Clean Docker build context
 - Smaller production images
 - Better layer caching
-- Clean separation of build and runtime
-- No build artifacts in final image
 
 ## Development
 
@@ -105,8 +129,21 @@ npm install
 ```
 
 2. Build all services:
+
+On Windows:
+```batch
+cd frontend && build.bat && cd ..
+cd backend && build.bat && cd ..
+cd workers && build.bat && cd ..
+cd cron && build.bat && cd ..
+```
+
+On Linux:
 ```bash
-npm run build:all
+cd frontend && ./build.sh && cd ..
+cd backend && ./build.sh && cd ..
+cd workers && ./build.sh && cd ..
+cd cron && ./build.sh && cd ..
 ```
 
 3. Start individual services:
@@ -130,8 +167,8 @@ Each service automatically includes these shared dependencies through npm worksp
 ## Docker Build Tips
 
 1. Each service has its own .dockerignore to optimize builds
-2. Multi-stage builds keep final images small
-3. Shared code is properly copied and built
+2. Build scripts handle shared dependencies
+3. Multi-stage builds keep images small
 4. Environment variables are set at runtime
 
 ## Railway Configuration
@@ -139,7 +176,7 @@ Each service automatically includes these shared dependencies through npm worksp
 1. Connect your repository to Railway
 2. Create a new service for each component
 3. Set the Root Directory to the appropriate service folder
-4. Use the Docker build configuration
+4. Use build.sh as the build command (Railway runs on Linux)
 5. Set the required environment variables
 6. Deploy!
 
@@ -151,8 +188,9 @@ The separation of services allows for:
 
 ## Build Process Notes
 
-- Build happens in isolated builder stage
-- Only necessary files are copied to final image
-- Node modules are copied from builder stage
-- Production-only environment variables
-- Proper handling of shared dependencies
+- Build scripts handle shared code copying
+- Multi-stage builds optimize image size
+- Each stage serves a specific purpose
+- Production images only contain necessary files
+- Proper cleanup after builds
+- Windows (.bat) and Linux (.sh) scripts provided for cross-platform development

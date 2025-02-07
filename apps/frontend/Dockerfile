@@ -5,10 +5,9 @@ WORKDIR /app
 # Builder stage
 FROM base AS builder
 COPY package.json package-lock.json ./
-COPY ../shared/package.json ../shared/
+COPY shared/package.json ./shared/
 RUN npm install
 COPY . .
-COPY ../shared ../shared
 RUN npm run build
 
 # Final stage
