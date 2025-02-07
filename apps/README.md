@@ -15,12 +15,12 @@ apps/
 
 ## Railway Deployment
 
-### For each service:
+Each service has its own Dockerfile and build configuration. Here's how to deploy each service:
 
-1. Frontend Service:
+### Frontend Service
 ```bash
 # Root Directory: /apps/frontend
-Build Command: npm install && npm run build
+Build Command: docker build -t postiz-frontend .
 Start Command: npm run start:prod
 Port: 6000
 Environment Variables:
@@ -28,10 +28,10 @@ Environment Variables:
   - PORT=6000
 ```
 
-2. Backend Service:
+### Backend Service
 ```bash
 # Root Directory: /apps/backend
-Build Command: npm install && npm run build
+Build Command: docker build -t postiz-backend .
 Start Command: npm run start:prod
 Port: 8080
 Environment Variables:
@@ -39,10 +39,10 @@ Environment Variables:
   - PORT=8080
 ```
 
-3. Workers Service:
+### Workers Service
 ```bash
 # Root Directory: /apps/workers
-Build Command: npm install && npm run build
+Build Command: docker build -t postiz-workers .
 Start Command: npm run start:prod
 Port: 4000
 Environment Variables:
@@ -50,10 +50,10 @@ Environment Variables:
   - PORT=4000
 ```
 
-4. Cron Service:
+### Cron Service
 ```bash
 # Root Directory: /apps/cron
-Build Command: npm install && npm run build
+Build Command: docker build -t postiz-cron .
 Start Command: npm run start:prod
 Port: 5000
 Environment Variables:
@@ -61,23 +61,14 @@ Environment Variables:
   - PORT=5000
 ```
 
-## TypeScript Configuration
+## Build Caching
 
-Each service has its own TypeScript configuration:
-- Frontend: Configured for Next.js with React and DOM types
-- Backend: Configured for NestJS with decorators
-- Workers: Configured for Node.js background processing
-- Cron: Configured for scheduled tasks
-- Shared: Configured for library code with declarations
+Each service maintains its own build cache:
+- TypeScript build info is stored in .build-cache/
+- Next.js cache is stored in .next/cache/
+- Node modules cache is stored in node_modules/.cache/
 
-Import paths have been updated to use the @postiz namespace:
-```typescript
-// Old imports
-import { something } from '@gitroom/helpers/util';
-
-// New imports
-import { something } from '@postiz/shared/helpers/util';
-```
+The Dockerfiles are configured to use BuildKit's cache mounts for optimal build performance.
 
 ## Development
 
@@ -110,11 +101,24 @@ The `shared` directory contains common code used across services:
 
 Each service automatically includes these shared dependencies through npm workspaces.
 
-## Build Cache
+## Docker Build Tips
 
-Each service maintains its own build cache:
-- TypeScript build info is stored in each service's directory
-- Next.js cache is stored in .next/cache
-- Node modules cache is stored in node_modules/.cache
+1. Each service has its own .dockerignore to optimize builds
+2. Build caches are service-specific to prevent conflicts
+3. Shared code is copied into each service's container
+4. Environment variables are set at runtime
 
-This separation ensures clean builds and prevents cache conflicts between services.
+## Railway Configuration
+
+1. Connect your repository to Railway
+2. Create a new service for each component
+3. Set the Root Directory to the appropriate service folder
+4. Use the Docker build configuration
+5. Set the required environment variables
+6. Deploy!
+
+The separation of services allows for:
+- Independent scaling
+- Isolated deployments
+- Service-specific monitoring
+- Separate logging
