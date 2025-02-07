@@ -1,0 +1,31 @@
+# Ignore everything by default
+*
+
+# Allow specific directories and files
+!apps/package.json
+!apps/shared/
+!apps/frontend/
+!apps/backend/
+!apps/workers/
+!apps/cron/
+
+# Then ignore specific patterns within allowed directories
+**/node_modules
+**/.next
+**/dist
+**/.build-cache
+**/.env
+**/.env.*
+**/coverage
+**/*.test.*
+**/.git
+**/.gitignore
+**/.vscode
+**/README.md
+**/jest.config.*
+**/*.spec.*
+**/*.test.*
+**/tsconfig.*
+**/.eslintrc.*
+**/.prettierrc*
+**/*.log

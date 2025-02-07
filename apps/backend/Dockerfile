@@ -5,9 +5,9 @@ WORKDIR /app/backend
 # Builder stage
 FROM base AS builder
 # Copy workspace files first
-COPY package.json ../
-COPY shared ../shared
-COPY backend/package.json ./
+COPY apps/package.json ../
+COPY apps/shared ../shared
+COPY apps/backend/package.json ./
 
 # Install dependencies
 WORKDIR /app
@@ -15,7 +15,7 @@ RUN npm install
 
 # Copy service source and build
 WORKDIR /app/backend
-COPY backend .
+COPY apps/backend .
 RUN npm run build
 
 # Final stage

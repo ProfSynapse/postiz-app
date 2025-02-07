@@ -5,9 +5,9 @@ WORKDIR /app/frontend
 # Builder stage
 FROM base AS builder
 # Copy workspace files first
-COPY package.json ../
-COPY shared ../shared
-COPY frontend/package.json ./
+COPY apps/package.json ../
+COPY apps/shared ../shared
+COPY apps/frontend/package.json ./
 
 # Install dependencies
 WORKDIR /app
@@ -15,7 +15,7 @@ RUN npm install
 
 # Copy service source and build
 WORKDIR /app/frontend
-COPY frontend .
+COPY apps/frontend .
 RUN npm run build
 
 # Final stage
