@@ -1,0 +1,33 @@
+{
+  "name": "@postiz/backend",
+  "version": "0.0.0",
+  "license": "MIT",
+  "workspaces": ["../shared"],
+  "scripts": {
+    "build": "nest build",
+    "start": "nest start",
+    "start:prod": "node dist/main.js",
+    "start:dev": "nest start --watch"
+  },
+  "dependencies": {
+    "@nestjs/common": "^10.0.2",
+    "@nestjs/core": "^10.0.2",
+    "@nestjs/platform-express": "^10.0.2",
+    "@nestjs/swagger": "^7.3.0",
+    "@nestjs/throttler": "^6.3.0",
+    "cookie-parser": "^1.4.7",
+    "multer": "^1.4.5-lts.1",
+    "sharp": "^0.33.4",
+    "stripe": "^15.5.0",
+    "nodemailer": "^6.9.15",
+    "resend": "^3.2.0"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^10.0.1",
+    "@nestjs/schematics": "^10.0.1",
+    "@types/cookie-parser": "^1.4.6",
+    "@types/multer": "^1.4.11",
+    "@types/nodemailer": "^6.4.16",
+    "@nx/nest": "19.7.2"
+  }
+}

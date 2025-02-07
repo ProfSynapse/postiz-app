@@ -1,0 +1,26 @@
+{
+  "name": "@postiz/workspace",
+  "private": true,
+  "workspaces": [
+    "shared",
+    "frontend",
+    "backend",
+    "workers",
+    "cron"
+  ],
+  "scripts": {
+    "build:all": "npm run build --workspaces",
+    "build:frontend": "npm run build -w frontend",
+    "build:backend": "npm run build -w backend",
+    "build:workers": "npm run build -w workers",
+    "build:cron": "npm run build -w cron",
+    "start:prod:frontend": "npm run start:prod -w frontend",
+    "start:prod:backend": "npm run start:prod -w backend",
+    "start:prod:workers": "npm run start:prod -w workers",
+    "start:prod:cron": "npm run start:prod -w cron"
+  },
+  "devDependencies": {
+    "@nx/workspace": "19.7.2",
+    "nx": "19.7.2"
+  }
+}

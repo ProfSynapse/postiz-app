@@ -1,0 +1,27 @@
+{
+  "name": "@postiz/cron",
+  "version": "0.0.0",
+  "license": "MIT",
+  "workspaces": ["../shared"],
+  "scripts": {
+    "build": "nest build",
+    "start": "nest start",
+    "start:prod": "node dist/main.js",
+    "start:dev": "nest start --watch"
+  },
+  "dependencies": {
+    "@nestjs/common": "^10.0.2",
+    "@nestjs/core": "^10.0.2",
+    "@nestjs/schedule": "^4.0.0",
+    "bullmq": "^5.12.12",
+    "dayjs": "^1.11.10",
+    "nestjs-command": "^3.1.4",
+    "yargs": "^17.7.2"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^10.0.1",
+    "@nestjs/schematics": "^10.0.1",
+    "@types/yargs": "^17.0.32",
+    "@nx/nest": "19.7.2"
+  }
+}
