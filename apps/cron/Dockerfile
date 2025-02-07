@@ -5,9 +5,9 @@ WORKDIR /app/cron
 # Builder stage
 FROM base AS builder
 # Copy workspace files first
-COPY apps/package.json ../
-COPY apps/shared ../shared
-COPY apps/cron/package.json ./
+COPY package.json ../
+COPY shared ../shared
+COPY cron/package.json ./
 
 # Install dependencies
 WORKDIR /app
@@ -15,7 +15,7 @@ RUN npm install
 
 # Copy service source and build
 WORKDIR /app/cron
-COPY apps/cron .
+COPY cron .
 RUN npm run build
 
 # Final stage

@@ -1,13 +1,31 @@
-# We want the docker builds to be clean, and as fast as possible. Don't send
-# any half-built stuff in the build context as a pre-caution (also saves copying
-# 180k files in node_modules that isn't used!).
+# Ignore everything by default
+*
+
+# Allow specific files and directories
+!package.json
+!shared/
+!frontend/
+!backend/
+!workers/
+!cron/
+
+# Then ignore specific patterns within allowed directories
 **/node_modules
-dist
-.nx
-.devcontainer
-**/.git
+**/.next
 **/dist
-**/*.md
-**/LICENSE
-**/npm-debug.log
-**/*.vscode
+**/.build-cache
+**/.env
+**/.env.*
+**/coverage
+**/*.test.*
+**/.git
+**/.gitignore
+**/.vscode
+**/README.md
+**/jest.config.*
+**/*.spec.*
+**/*.test.*
+**/tsconfig.*
+**/.eslintrc.*
+**/.prettierrc*
+**/*.log
