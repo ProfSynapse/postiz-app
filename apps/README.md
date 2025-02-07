@@ -15,7 +15,7 @@ apps/
 
 ## Railway Deployment
 
-Each service has its own Dockerfile with optimized build caching. Here's how to deploy each service:
+Each service uses a multi-stage Docker build for optimal production images. Here's how to deploy each service:
 
 ### Frontend Service
 ```bash
@@ -61,23 +61,40 @@ Environment Variables:
   - PORT=5000
 ```
 
-## Build Caching
+## Multi-Stage Build Process
 
-Each service uses BuildKit cache mounts for optimal performance:
+Each service uses a three-stage Docker build:
 
-Frontend:
+1. Base Stage:
 ```dockerfile
-RUN --mount=type=cache,id=next-cache npm run build
+FROM node:20.17-alpine3.19 AS base
+WORKDIR /app
 ```
 
-Backend/Workers/Cron:
+2. Builder Stage:
 ```dockerfile
-RUN --mount=type=cache,id=npm-cache npm run build
+FROM base AS builder
+COPY package.json package-lock.json ./
+COPY ../shared/package.json ../shared/
+RUN npm install
+COPY . .
+COPY ../shared ../shared
+RUN npm run build
 ```
 
-Cache IDs:
-- next-cache: Next.js build cache (frontend only)
-- npm-cache: NPM module cache
+3. Final Stage:
+```dockerfile
+FROM base
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./package.json
+```
+
+Benefits:
+- Smaller production images
+- Better layer caching
+- Clean separation of build and runtime
+- No build artifacts in final image
 
 ## Development
 
@@ -113,8 +130,8 @@ Each service automatically includes these shared dependencies through npm worksp
 ## Docker Build Tips
 
 1. Each service has its own .dockerignore to optimize builds
-2. Build caches use simple, unique IDs
-3. Shared code is copied into each service's container
+2. Multi-stage builds keep final images small
+3. Shared code is properly copied and built
 4. Environment variables are set at runtime
 
 ## Railway Configuration
@@ -132,10 +149,10 @@ The separation of services allows for:
 - Service-specific monitoring
 - Separate logging
 
-## Cache Mount Notes
+## Build Process Notes
 
-- Cache mounts use BuildKit's cache feature
-- Simple format: --mount=type=cache,id=<cache-id>
-- Frontend uses next-cache for Next.js build cache
-- Other services use npm-cache for build cache
-- Caches persist between builds for faster rebuilds
+- Build happens in isolated builder stage
+- Only necessary files are copied to final image
+- Node modules are copied from builder stage
+- Production-only environment variables
+- Proper handling of shared dependencies
