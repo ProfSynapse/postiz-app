@@ -18,11 +18,10 @@ xcopy /E /I /Y libraries\nestjs-libraries\* apps\shared\libraries\nestjs-librari
 xcopy /E /I /Y libraries\plugins\* apps\shared\libraries\plugins\
 xcopy /E /I /Y libraries\react-shared-libraries\* apps\shared\libraries\react-shared-libraries\
 
-echo Updating tsconfig paths...
-powershell -Command "(Get-Content apps\*/tsconfig.json) -replace '@gitroom/helpers', '@postiz/shared/helpers' | Set-Content apps\*/tsconfig.json"
-powershell -Command "(Get-Content apps\*/tsconfig.json) -replace '@gitroom/nestjs-libraries', '@postiz/shared/nestjs-libraries' | Set-Content apps\*/tsconfig.json"
-powershell -Command "(Get-Content apps\*/tsconfig.json) -replace '@gitroom/plugins', '@postiz/shared/plugins' | Set-Content apps\*/tsconfig.json"
-powershell -Command "(Get-Content apps\*/tsconfig.json) -replace '@gitroom/react', '@postiz/shared/react' | Set-Content apps\*/tsconfig.json"
+echo Updating import paths...
+cd apps
+node update-imports.js
+cd ..
 
 echo Removing old libraries directory...
 rmdir /S /Q libraries
@@ -42,26 +41,43 @@ echo For each service in Railway, set:
 echo.
 echo 1. Frontend:
 echo    - Root Directory: /apps/frontend
-echo    - Build Command: npm install ^&^& npm run build
+echo    - Build Command: npm install && npm run build
 echo    - Start Command: npm run start:prod
 echo    - Port: 6000
+echo    - Environment Variables:
+echo      NODE_ENV=production
+echo      PORT=6000
 echo.
 echo 2. Backend:
 echo    - Root Directory: /apps/backend
-echo    - Build Command: npm install ^&^& npm run build
+echo    - Build Command: npm install && npm run build
 echo    - Start Command: npm run start:prod
 echo    - Port: 8080
+echo    - Environment Variables:
+echo      NODE_ENV=production
+echo      PORT=8080
 echo.
 echo 3. Workers:
 echo    - Root Directory: /apps/workers
-echo    - Build Command: npm install ^&^& npm run build
+echo    - Build Command: npm install && npm run build
 echo    - Start Command: npm run start:prod
 echo    - Port: 4000
+echo    - Environment Variables:
+echo      NODE_ENV=production
+echo      PORT=4000
 echo.
 echo 4. Cron:
 echo    - Root Directory: /apps/cron
-echo    - Build Command: npm install ^&^& npm run build
+echo    - Build Command: npm install && npm run build
 echo    - Start Command: npm run start:prod
 echo    - Port: 5000
+echo    - Environment Variables:
+echo      NODE_ENV=production
+echo      PORT=5000
+echo.
+echo Important Notes:
+echo - Each service now has its own tsconfig.json
+echo - Import paths have been updated to use @postiz namespace
+echo - Build caches are now service-specific
 echo.
 pause

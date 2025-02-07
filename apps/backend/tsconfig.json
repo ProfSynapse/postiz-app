@@ -1,17 +1,26 @@
 {
-  "extends": "../../tsconfig.base.json",
-  "files": [],
-  "include": [],
-  "references": [
-    {
-      "path": "./tsconfig.app.json"
-    },
-    {
-      "path": "./tsconfig.spec.json"
-    }
-  ],
   "compilerOptions": {
-    "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true
-  }
+    "sourceMap": true,
+    "declaration": false,
+    "moduleResolution": "node",
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "strictPropertyInitialization": false,
+    "importHelpers": true,
+    "target": "es2015",
+    "module": "commonjs",
+    "lib": ["es2020"],
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@postiz/shared/*": ["../shared/libraries/*"],
+      "@postiz/backend/*": ["src/*"]
+    },
+    "outDir": "./dist",
+    "strict": true,
+    "allowJs": true,
+    "noImplicitAny": false
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
 }

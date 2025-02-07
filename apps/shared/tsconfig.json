@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "sourceMap": true,
+    "declaration": true,
+    "moduleResolution": "node",
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "importHelpers": true,
+    "target": "es2015",
+    "module": "commonjs",
+    "lib": ["es2020"],
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@postiz/shared/*": ["libraries/*"]
+    },
+    "outDir": "./dist",
+    "strict": true,
+    "allowJs": true,
+    "noImplicitAny": false,
+    "resolveJsonModule": true
+  },
+  "include": ["libraries/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
