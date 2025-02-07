@@ -63,27 +63,21 @@ Environment Variables:
 
 ## Build Caching
 
-Each service uses BuildKit cache mounts with proper sharing locks:
+Each service uses BuildKit cache mounts for optimal performance:
 
 Frontend:
 ```dockerfile
-RUN --mount=type=cache,target=/app/.next/cache,id=frontend-cache,sharing=locked \
-    --mount=type=cache,target=/app/node_modules/.cache,id=npm-cache,sharing=locked \
-    --mount=type=cache,target=/app/.build-cache,id=tsbuildinfo-cache,sharing=locked \
-    npm run build
+RUN --mount=type=cache,id=next-cache npm run build
 ```
 
 Backend/Workers/Cron:
 ```dockerfile
-RUN --mount=type=cache,target=/app/node_modules/.cache,id=npm-cache,sharing=locked \
-    --mount=type=cache,target=/app/.build-cache,id=tsbuildinfo-cache,sharing=locked \
-    npm run build
+RUN --mount=type=cache,id=npm-cache npm run build
 ```
 
 Cache IDs:
-- frontend-cache: Next.js build cache (frontend only)
+- next-cache: Next.js build cache (frontend only)
 - npm-cache: NPM module cache
-- tsbuildinfo-cache: TypeScript/build output cache
 
 ## Development
 
@@ -119,8 +113,8 @@ Each service automatically includes these shared dependencies through npm worksp
 ## Docker Build Tips
 
 1. Each service has its own .dockerignore to optimize builds
-2. Build caches use sharing=locked to prevent concurrent access issues
-3. Cache IDs are consistent across services for shared caches
+2. Build caches use simple, unique IDs
+3. Shared code is copied into each service's container
 4. Environment variables are set at runtime
 
 ## Railway Configuration
@@ -141,8 +135,7 @@ The separation of services allows for:
 ## Cache Mount Notes
 
 - Cache mounts use BuildKit's cache feature
-- sharing=locked prevents concurrent cache access issues
-- Cache IDs are simple and descriptive
-- Cache directories are created before build
+- Simple format: --mount=type=cache,id=<cache-id>
+- Frontend uses next-cache for Next.js build cache
+- Other services use npm-cache for build cache
 - Caches persist between builds for faster rebuilds
-- Frontend has an additional Next.js-specific cache

@@ -11,13 +11,8 @@ RUN npm install
 COPY . .
 COPY ../shared ../shared
 
-# Create cache directories
-RUN mkdir -p node_modules/.cache .build-cache
-
-# Build with proper cache mounts
-RUN --mount=type=cache,target=/app/node_modules/.cache,id=npm-cache,sharing=locked \
-    --mount=type=cache,target=/app/.build-cache,id=tsbuildinfo-cache,sharing=locked \
-    npm run build
+# Build with cache mount
+RUN --mount=type=cache,id=npm-cache npm run build
 
 EXPOSE 5000
 
