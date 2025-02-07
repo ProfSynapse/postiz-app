@@ -63,27 +63,27 @@ Environment Variables:
 
 ## Build Caching
 
-Each service uses BuildKit cache mounts for optimal performance:
+Each service uses BuildKit cache mounts with proper sharing locks:
 
 Frontend:
 ```dockerfile
-RUN --mount=type=cache,id=postiz-next-cache,target=/app/.next/cache \
-    --mount=type=cache,id=postiz-npm-cache,target=/app/node_modules/.cache \
-    --mount=type=cache,id=postiz-build-cache,target=/app/.build-cache \
+RUN --mount=type=cache,target=/app/.next/cache,id=frontend-cache,sharing=locked \
+    --mount=type=cache,target=/app/node_modules/.cache,id=npm-cache,sharing=locked \
+    --mount=type=cache,target=/app/.build-cache,id=tsbuildinfo-cache,sharing=locked \
     npm run build
 ```
 
 Backend/Workers/Cron:
 ```dockerfile
-RUN --mount=type=cache,id=postiz-npm-cache,target=/app/node_modules/.cache \
-    --mount=type=cache,id=postiz-build-cache,target=/app/.build-cache \
+RUN --mount=type=cache,target=/app/node_modules/.cache,id=npm-cache,sharing=locked \
+    --mount=type=cache,target=/app/.build-cache,id=tsbuildinfo-cache,sharing=locked \
     npm run build
 ```
 
 Cache IDs:
-- postiz-next-cache: Next.js build cache (frontend only)
-- postiz-npm-cache: NPM module cache
-- postiz-build-cache: TypeScript/build output cache
+- frontend-cache: Next.js build cache (frontend only)
+- npm-cache: NPM module cache
+- tsbuildinfo-cache: TypeScript/build output cache
 
 ## Development
 
@@ -119,8 +119,8 @@ Each service automatically includes these shared dependencies through npm worksp
 ## Docker Build Tips
 
 1. Each service has its own .dockerignore to optimize builds
-2. Build caches use consistent, prefixed IDs across services
-3. Shared code is copied into each service's container
+2. Build caches use sharing=locked to prevent concurrent access issues
+3. Cache IDs are consistent across services for shared caches
 4. Environment variables are set at runtime
 
 ## Railway Configuration
@@ -141,7 +141,8 @@ The separation of services allows for:
 ## Cache Mount Notes
 
 - Cache mounts use BuildKit's cache feature
-- Cache IDs are prefixed with 'postiz-' for proper namespacing
-- Each cache type has a unique, consistent ID across services
+- sharing=locked prevents concurrent cache access issues
+- Cache IDs are simple and descriptive
 - Cache directories are created before build
 - Caches persist between builds for faster rebuilds
+- Frontend has an additional Next.js-specific cache
