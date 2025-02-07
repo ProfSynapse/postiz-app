@@ -15,7 +15,7 @@ apps/
 
 ## Railway Deployment
 
-Each service has its own Dockerfile and build configuration. Here's how to deploy each service:
+Each service has its own Dockerfile with optimized build caching. Here's how to deploy each service:
 
 ### Frontend Service
 ```bash
@@ -63,12 +63,27 @@ Environment Variables:
 
 ## Build Caching
 
-Each service maintains its own build cache:
-- TypeScript build info is stored in .build-cache/
-- Next.js cache is stored in .next/cache/
-- Node modules cache is stored in node_modules/.cache/
+Each service uses BuildKit cache mounts for optimal performance:
 
-The Dockerfiles are configured to use BuildKit's cache mounts for optimal build performance.
+Frontend:
+```dockerfile
+RUN --mount=type=cache,id=next-cache,target=/app/.next/cache \
+    --mount=type=cache,id=npm-cache,target=/app/node_modules/.cache \
+    --mount=type=cache,id=build-cache,target=/app/.build-cache \
+    npm run build
+```
+
+Backend/Workers/Cron:
+```dockerfile
+RUN --mount=type=cache,id=npm-cache,target=/app/node_modules/.cache \
+    --mount=type=cache,id=build-cache,target=/app/.build-cache \
+    npm run build
+```
+
+Cache IDs:
+- next-cache: Next.js build cache (frontend only)
+- npm-cache: NPM module cache
+- build-cache: TypeScript/build output cache
 
 ## Development
 
@@ -104,7 +119,7 @@ Each service automatically includes these shared dependencies through npm worksp
 ## Docker Build Tips
 
 1. Each service has its own .dockerignore to optimize builds
-2. Build caches are service-specific to prevent conflicts
+2. Build caches use consistent IDs across services
 3. Shared code is copied into each service's container
 4. Environment variables are set at runtime
 
@@ -122,3 +137,10 @@ The separation of services allows for:
 - Isolated deployments
 - Service-specific monitoring
 - Separate logging
+
+## Cache Mount Notes
+
+- Cache mounts use BuildKit's cache feature
+- Each cache has a unique ID for proper isolation
+- Cache directories are created before build
+- Caches persist between builds for faster rebuilds
