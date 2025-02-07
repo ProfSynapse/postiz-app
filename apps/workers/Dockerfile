@@ -1,24 +1,30 @@
 # Base stage
 FROM node:20.17-alpine3.19 AS base
-WORKDIR /app
+WORKDIR /app/workers
 
 # Builder stage
 FROM base AS builder
-COPY package.json package-lock.json ./
-COPY shared/package.json ./shared/
+# Copy workspace files first
+COPY package.json ../
+COPY shared ../shared
+COPY workers/package.json ./
+
+# Install dependencies
+WORKDIR /app
 RUN npm install
-COPY . .
+
+# Copy service source and build
+WORKDIR /app/workers
+COPY workers .
 RUN npm run build
 
 # Final stage
 FROM base
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/workers/dist ./dist
+COPY --from=builder /app/workers/package.json .
+COPY --from=builder /app/workers/node_modules ./node_modules
+COPY --from=builder /app/node_modules ../node_modules
 
-ENV PORT=4000
 ENV NODE_ENV=production
-
-EXPOSE 4000
 
 CMD ["npm", "run", "start:prod"]

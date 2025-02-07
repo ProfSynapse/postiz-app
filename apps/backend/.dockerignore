@@ -1,14 +1,18 @@
-node_modules
-dist
-.build-cache
-.env
-.env.*
-npm-debug.log
-yarn-debug.log
-yarn-error.log
-.git
-.gitignore
-README.md
-.vscode
-coverage
-*.test.*
+# Ignore everything
+*
+
+# Allow specific files and directories
+!package.json
+!backend/
+!shared/
+
+# Then ignore specific patterns within allowed directories
+**/node_modules
+**/dist
+**/.build-cache
+**/.env
+**/.env.*
+**/coverage
+**/*.test.*
+**/.git
+**/.gitignore

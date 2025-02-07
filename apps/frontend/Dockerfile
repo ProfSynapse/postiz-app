@@ -1,20 +1,30 @@
 # Base stage
 FROM node:20.17-alpine3.19 AS base
-WORKDIR /app
+WORKDIR /app/frontend
 
 # Builder stage
 FROM base AS builder
-COPY package.json package-lock.json ./
-COPY shared/package.json ./shared/
+# Copy workspace files first
+COPY package.json ../
+COPY shared ../shared
+COPY frontend/package.json ./
+
+# Install dependencies
+WORKDIR /app
 RUN npm install
-COPY . .
+
+# Copy service source and build
+WORKDIR /app/frontend
+COPY frontend .
 RUN npm run build
 
 # Final stage
 FROM base
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/frontend/.next ./.next
+COPY --from=builder /app/frontend/public ./public
+COPY --from=builder /app/frontend/package.json .
+COPY --from=builder /app/frontend/node_modules ./node_modules
+COPY --from=builder /app/node_modules ../node_modules
 
 ENV PORT=6000
 ENV NODE_ENV=production
