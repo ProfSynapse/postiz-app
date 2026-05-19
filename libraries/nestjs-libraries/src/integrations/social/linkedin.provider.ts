@@ -15,6 +15,11 @@ import { LinkedinDto } from '@gitroom/nestjs-libraries/dtos/posts/providers-sett
 import imageToPDF from 'image-to-pdf';
 import { Readable } from 'stream';
 import { Rules } from '@gitroom/nestjs-libraries/chat/rules.description.decorator';
+import {
+  getLinkedInVersion,
+  linkedInFetchWithFallback,
+  linkedInRetryOn426,
+} from '@gitroom/nestjs-libraries/integrations/social/linkedin.version';
 
 @Rules(
   'LinkedIn can have maximum one attachment when selecting video, when choosing a carousel on LinkedIn minimum amount of attachment must be two, and only pictures, if uploading a video, LinkedIn can have only one attachment'
@@ -196,17 +201,18 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
     }
 
     const { elements } = await (
-      await fetch(
+      await linkedInFetchWithFallback(
         `https://api.linkedin.com/v2/organizations?q=vanityName&vanityName=${getCompanyVanity[1]}`,
-        {
+        {},
+        (version) => ({
           method: 'GET',
           headers: {
             'Content-Type': 'application/json',
             'X-Restli-Protocol-Version': '2.0.0',
-            'LinkedIn-Version': '202601',
+            'LinkedIn-Version': version,
             Authorization: `Bearer ${token}`,
           },
-        }
+        })
       )
     ).json();
 
@@ -240,84 +246,90 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
 
     const {
       value: { uploadUrl, image, video, document, uploadInstructions, ...all },
-    } = await (
-      await this.fetch(
-        `https://api.linkedin.com/rest/${endpoint}?action=initializeUpload`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Restli-Protocol-Version': '2.0.0',
-            'LinkedIn-Version': '202601',
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({
-            initializeUploadRequest: {
-              owner:
-                type === 'personal'
-                  ? `urn:li:person:${personId}`
-                  : `urn:li:organization:${personId}`,
-              ...(isVideo
-                ? {
-                    fileSizeBytes: picture.length,
-                    uploadCaptions: false,
-                    uploadThumbnail: false,
-                  }
-                : {}),
+    } = await linkedInRetryOn426(async (version) =>
+      (
+        await this.fetch(
+          `https://api.linkedin.com/rest/${endpoint}?action=initializeUpload`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Restli-Protocol-Version': '2.0.0',
+              'LinkedIn-Version': version,
+              Authorization: `Bearer ${accessToken}`,
             },
-          }),
-        }
-      )
-    ).json();
+            body: JSON.stringify({
+              initializeUploadRequest: {
+                owner:
+                  type === 'personal'
+                    ? `urn:li:person:${personId}`
+                    : `urn:li:organization:${personId}`,
+                ...(isVideo
+                  ? {
+                      fileSizeBytes: picture.length,
+                      uploadCaptions: false,
+                      uploadThumbnail: false,
+                    }
+                  : {}),
+              },
+            }),
+          }
+        )
+      ).json()
+    );
 
     const sendUrlRequest = uploadInstructions?.[0]?.uploadUrl || uploadUrl;
     const finalOutput = video || image || document;
 
     const etags = [];
     for (let i = 0; i < picture.length; i += 1024 * 1024 * 2) {
-      const upload = await this.fetch(
-        sendUrlRequest,
-        {
-          method: 'PUT',
-          headers: {
-            'X-Restli-Protocol-Version': '2.0.0',
-            'LinkedIn-Version': '202601',
-            Authorization: `Bearer ${accessToken}`,
-            ...(isVideo
-              ? { 'Content-Type': 'application/octet-stream' }
-              : isPdf
-              ? { 'Content-Type': 'application/pdf' }
-              : {}),
+      const upload = await linkedInRetryOn426(async (version) =>
+        this.fetch(
+          sendUrlRequest,
+          {
+            method: 'PUT',
+            headers: {
+              'X-Restli-Protocol-Version': '2.0.0',
+              'LinkedIn-Version': version,
+              Authorization: `Bearer ${accessToken}`,
+              ...(isVideo
+                ? { 'Content-Type': 'application/octet-stream' }
+                : isPdf
+                ? { 'Content-Type': 'application/pdf' }
+                : {}),
+            },
+            body: picture.slice(i, i + 1024 * 1024 * 2),
           },
-          body: picture.slice(i, i + 1024 * 1024 * 2),
-        },
-        'linkedin',
-        0,
-        true
+          'linkedin',
+          0,
+          true
+        )
       );
 
       etags.push(upload.headers.get('etag'));
     }
 
     if (isVideo) {
-      const a = await this.fetch(
-        'https://api.linkedin.com/rest/videos?action=finalizeUpload',
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            finalizeUploadRequest: {
-              video,
-              uploadToken: '',
-              uploadedPartIds: etags,
+      const a = await linkedInRetryOn426(async (version) =>
+        this.fetch(
+          'https://api.linkedin.com/rest/videos?action=finalizeUpload',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              finalizeUploadRequest: {
+                video,
+                uploadToken: '',
+                uploadedPartIds: etags,
+              },
+            }),
+            headers: {
+              'X-Restli-Protocol-Version': '2.0.0',
+              'LinkedIn-Version': version,
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${accessToken}`,
             },
-          }),
-          headers: {
-            'X-Restli-Protocol-Version': '2.0.0',
-            'LinkedIn-Version': '202601',
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${accessToken}`,
-          },
-        }
+          }
+        )
       );
     }
 
@@ -586,16 +598,18 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
       isPdf
     );
 
-    const response = await this.fetch('https://api.linkedin.com/rest/posts', {
-      method: 'POST',
-      headers: {
-        'LinkedIn-Version': '202601',
-        'X-Restli-Protocol-Version': '2.0.0',
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify(postPayload),
-    });
+    const response = await linkedInRetryOn426(async (version) =>
+      this.fetch('https://api.linkedin.com/rest/posts', {
+        method: 'POST',
+        headers: {
+          'LinkedIn-Version': version,
+          'X-Restli-Protocol-Version': '2.0.0',
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify(postPayload),
+      })
+    );
 
     if (response.status !== 201 && response.status !== 200) {
       throw new Error('Error posting to LinkedIn');
@@ -733,48 +747,51 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
     information: any,
     isPersonal = true
   ) {
-    await this.fetch(`https://api.linkedin.com/rest/posts`, {
-      body: JSON.stringify({
-        author:
-          (isPersonal ? 'urn:li:person:' : `urn:li:organization:`) +
-          `${integration.internalId}`,
-        commentary: '',
-        visibility: 'PUBLIC',
-        distribution: {
-          feedDistribution: 'MAIN_FEED',
-          targetEntities: [],
-          thirdPartyDistributionChannels: [],
+    await linkedInRetryOn426(async (version) =>
+      this.fetch(`https://api.linkedin.com/rest/posts`, {
+        body: JSON.stringify({
+          author:
+            (isPersonal ? 'urn:li:person:' : `urn:li:organization:`) +
+            `${integration.internalId}`,
+          commentary: '',
+          visibility: 'PUBLIC',
+          distribution: {
+            feedDistribution: 'MAIN_FEED',
+            targetEntities: [],
+            thirdPartyDistributionChannels: [],
+          },
+          lifecycleState: 'PUBLISHED',
+          isReshareDisabledByAuthor: false,
+          reshareContext: {
+            parent: postId,
+          },
+        }),
+        method: 'POST',
+        headers: {
+          'X-Restli-Protocol-Version': '2.0.0',
+          'Content-Type': 'application/json',
+          'LinkedIn-Version': version,
+          Authorization: `Bearer ${integration.token}`,
         },
-        lifecycleState: 'PUBLISHED',
-        isReshareDisabledByAuthor: false,
-        reshareContext: {
-          parent: postId,
-        },
-      }),
-      method: 'POST',
-      headers: {
-        'X-Restli-Protocol-Version': '2.0.0',
-        'Content-Type': 'application/json',
-        'LinkedIn-Version': '202601',
-        Authorization: `Bearer ${integration.token}`,
-      },
-    });
+      })
+    );
   }
 
   override async mention(token: string, data: { query: string }) {
     const { elements } = await (
-      await fetch(
+      await linkedInFetchWithFallback(
         `https://api.linkedin.com/v2/organizations?q=vanityName&vanityName=${encodeURIComponent(
           data.query
         )}&projection=(elements*(id,localizedName,logoV2(original~:playableStreams)))`,
-        {
+        {},
+        (version) => ({
           headers: {
             'X-Restli-Protocol-Version': '2.0.0',
             'Content-Type': 'application/json',
-            'LinkedIn-Version': '202601',
+            'LinkedIn-Version': version,
             Authorization: `Bearer ${token}`,
           },
-        }
+        })
       )
     ).json();
 
