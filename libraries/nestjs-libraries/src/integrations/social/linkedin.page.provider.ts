@@ -12,6 +12,10 @@ import { Integration } from '@prisma/client';
 import { Plug } from '@gitroom/helpers/decorators/plug.decorator';
 import { timer } from '@gitroom/helpers/utils/timer';
 import { Rules } from '@gitroom/nestjs-libraries/chat/rules.description.decorator';
+import {
+  linkedInFetchWithFallback,
+  linkedInRetryOn426,
+} from '@gitroom/nestjs-libraries/integrations/social/linkedin.version';
 
 @Rules(
   'LinkedIn can have maximum one attachment when selecting video, when choosing a carousel on LinkedIn minimum amount of attachment must be two, and only pictures, if uploading a video, LinkedIn can have only one attachment'
@@ -122,15 +126,16 @@ export class LinkedinPageProvider
 
   async companies(accessToken: string) {
     const { elements, ...all } = await (
-      await fetch(
+      await linkedInFetchWithFallback(
         'https://api.linkedin.com/v2/organizationalEntityAcls?q=roleAssignee&role=ADMINISTRATOR&projection=(elements*(organizationalTarget~(localizedName,vanityName,logoV2(original~:playableStreams))))',
-        {
+        {},
+        (version) => ({
           headers: {
             Authorization: `Bearer ${accessToken}`,
             'X-Restli-Protocol-Version': '2.0.0',
-            'LinkedIn-Version': '202601',
+            'LinkedIn-Version': version,
           },
-        }
+        })
       )
     ).json();
 
@@ -267,47 +272,50 @@ export class LinkedinPageProvider
     const startDate = dayjs().subtract(date, 'days').unix() * 1000;
 
     const { elements }: { elements: Root[]; paging: any } = await (
-      await fetch(
+      await linkedInFetchWithFallback(
         `https://api.linkedin.com/v2/organizationPageStatistics?q=organization&organization=${encodeURIComponent(
           `urn:li:organization:${id}`
         )}&timeIntervals=(timeRange:(start:${startDate},end:${endDate}),timeGranularityType:DAY)`,
-        {
+        {},
+        (version) => ({
           headers: {
             Authorization: `Bearer ${accessToken}`,
-            'Linkedin-Version': '202405',
+            'LinkedIn-Version': version,
             'X-Restli-Protocol-Version': '2.0.0',
           },
-        }
+        })
       )
     ).json();
 
     const { elements: elements2 }: { elements: Root[]; paging: any } = await (
-      await fetch(
+      await linkedInFetchWithFallback(
         `https://api.linkedin.com/v2/organizationalEntityFollowerStatistics?q=organizationalEntity&organizationalEntity=${encodeURIComponent(
           `urn:li:organization:${id}`
         )}&timeIntervals=(timeRange:(start:${startDate},end:${endDate}),timeGranularityType:DAY)`,
-        {
+        {},
+        (version) => ({
           headers: {
             Authorization: `Bearer ${accessToken}`,
-            'Linkedin-Version': '202405',
+            'LinkedIn-Version': version,
             'X-Restli-Protocol-Version': '2.0.0',
           },
-        }
+        })
       )
     ).json();
 
     const { elements: elements3 }: { elements: Root[]; paging: any } = await (
-      await fetch(
+      await linkedInFetchWithFallback(
         `https://api.linkedin.com/v2/organizationalEntityShareStatistics?q=organizationalEntity&organizationalEntity=${encodeURIComponent(
           `urn:li:organization:${id}`
         )}&timeIntervals=(timeRange:(start:${startDate},end:${endDate}),timeGranularityType:DAY)`,
-        {
+        {},
+        (version) => ({
           headers: {
             Authorization: `Bearer ${accessToken}`,
-            'Linkedin-Version': '202405',
+            'LinkedIn-Version': version,
             'X-Restli-Protocol-Version': '2.0.0',
           },
-        }
+        })
       )
     ).json();
 
@@ -407,47 +415,51 @@ export class LinkedinPageProvider
   ) {
     const {
       likesSummary: { totalLikes },
-    } = await (
-      await this.fetch(
-        `https://api.linkedin.com/v2/socialActions/${encodeURIComponent(id)}`,
-        {
-          method: 'GET',
-          headers: {
-            'X-Restli-Protocol-Version': '2.0.0',
-            'Content-Type': 'application/json',
-            'LinkedIn-Version': '202601',
-            Authorization: `Bearer ${integration.token}`,
-          },
-        }
-      )
-    ).json();
+    } = await linkedInRetryOn426(async (version) =>
+      (
+        await this.fetch(
+          `https://api.linkedin.com/v2/socialActions/${encodeURIComponent(id)}`,
+          {
+            method: 'GET',
+            headers: {
+              'X-Restli-Protocol-Version': '2.0.0',
+              'Content-Type': 'application/json',
+              'LinkedIn-Version': version,
+              Authorization: `Bearer ${integration.token}`,
+            },
+          }
+        )
+      ).json()
+    );
 
     if (totalLikes >= +fields.likesAmount) {
       await timer(2000);
-      await this.fetch(`https://api.linkedin.com/rest/posts`, {
-        body: JSON.stringify({
-          author: `urn:li:organization:${integration.internalId}`,
-          commentary: '',
-          visibility: 'PUBLIC',
-          distribution: {
-            feedDistribution: 'MAIN_FEED',
-            targetEntities: [],
-            thirdPartyDistributionChannels: [],
+      await linkedInRetryOn426(async (version) =>
+        this.fetch(`https://api.linkedin.com/rest/posts`, {
+          body: JSON.stringify({
+            author: `urn:li:organization:${integration.internalId}`,
+            commentary: '',
+            visibility: 'PUBLIC',
+            distribution: {
+              feedDistribution: 'MAIN_FEED',
+              targetEntities: [],
+              thirdPartyDistributionChannels: [],
+            },
+            lifecycleState: 'PUBLISHED',
+            isReshareDisabledByAuthor: false,
+            reshareContext: {
+              parent: id,
+            },
+          }),
+          method: 'POST',
+          headers: {
+            'X-Restli-Protocol-Version': '2.0.0',
+            'Content-Type': 'application/json',
+            'LinkedIn-Version': version,
+            Authorization: `Bearer ${integration.token}`,
           },
-          lifecycleState: 'PUBLISHED',
-          isReshareDisabledByAuthor: false,
-          reshareContext: {
-            parent: id,
-          },
-        }),
-        method: 'POST',
-        headers: {
-          'X-Restli-Protocol-Version': '2.0.0',
-          'Content-Type': 'application/json',
-          'LinkedIn-Version': '202601',
-          Authorization: `Bearer ${integration.token}`,
-        },
-      });
+        })
+      );
       return true;
     }
 
@@ -485,20 +497,22 @@ export class LinkedinPageProvider
   ) {
     const {
       likesSummary: { totalLikes },
-    } = await (
-      await this.fetch(
-        `https://api.linkedin.com/v2/socialActions/${encodeURIComponent(id)}`,
-        {
-          method: 'GET',
-          headers: {
-            'X-Restli-Protocol-Version': '2.0.0',
-            'Content-Type': 'application/json',
-            'LinkedIn-Version': '202601',
-            Authorization: `Bearer ${integration.token}`,
-          },
-        }
-      )
-    ).json();
+    } = await linkedInRetryOn426(async (version) =>
+      (
+        await this.fetch(
+          `https://api.linkedin.com/v2/socialActions/${encodeURIComponent(id)}`,
+          {
+            method: 'GET',
+            headers: {
+              'X-Restli-Protocol-Version': '2.0.0',
+              'Content-Type': 'application/json',
+              'LinkedIn-Version': version,
+              Authorization: `Bearer ${integration.token}`,
+            },
+          }
+        )
+      ).json()
+    );
 
     if (totalLikes >= fields.likesAmount) {
       await timer(2000);
