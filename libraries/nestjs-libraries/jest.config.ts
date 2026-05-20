@@ -8,6 +8,10 @@ export default {
   preset: '../../jest.preset.js',
   testEnvironment: 'node',
   transform: {
+    // isolatedModules:true (in tsconfig.spec.json) avoids cross-file type-checking
+    // against pre-existing TS strict-mode violations in helpers (e.g.,
+    // concurrency.service.ts). Each spec file is compiled in isolation; per-file
+    // types still validated by ts-jest.
     '^.+\\.[tj]s$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.spec.json' }],
   },
   moduleFileExtensions: ['ts', 'js', 'html'],
