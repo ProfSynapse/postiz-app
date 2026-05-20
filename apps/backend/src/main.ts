@@ -16,6 +16,8 @@ import { HttpExceptionFilter } from '@gitroom/nestjs-libraries/services/exceptio
 import { ConfigurationChecker } from '@gitroom/helpers/configuration/configuration.checker';
 import { startMcp } from '@gitroom/nestjs-libraries/chat/start.mcp';
 
+const MCP_STARTUP_TIMEOUT_MS = 30_000;
+
 async function start() {
   const app = await NestFactory.create(AppModule, {
     rawBody: true,
@@ -37,7 +39,38 @@ async function start() {
     },
   });
 
-  await startMcp(app);
+  // Bound MCP startup so a hang in Mastra/@mastra/pg cannot block app.listen().
+  // The orphaned startMcp promise keeps running so MCP may still come up late; we
+  // attach a no-op catch to avoid unhandledRejection if it later rejects.
+  const mcpPromise = startMcp(app);
+  try {
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    const timeoutPromise = new Promise<never>((_resolve, reject) => {
+      timeoutHandle = setTimeout(
+        () =>
+          reject(
+            new Error(
+              `MCP startup did not complete within ${MCP_STARTUP_TIMEOUT_MS}ms`
+            )
+          ),
+        MCP_STARTUP_TIMEOUT_MS
+      );
+    });
+    try {
+      await Promise.race([mcpPromise, timeoutPromise]);
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
+  } catch (e) {
+    Logger.warn(
+      `MCP startup failed or timed out; backend will continue without MCP. The /mcp/:id endpoint will be unavailable until the next successful boot. Reason: ${
+        (e as Error)?.message ?? e
+      }`,
+      'MCP'
+    );
+    // Swallow late rejection from the orphaned mcpPromise to avoid unhandledRejection.
+    mcpPromise.catch(() => undefined);
+  }
 
   app.useGlobalPipes(
     new ValidationPipe({
