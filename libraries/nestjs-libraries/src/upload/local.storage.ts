@@ -13,7 +13,7 @@ export class LocalStorage implements IUploadProvider {
     const contentType =
       loadImage?.headers?.['content-type'] ||
       loadImage?.headers?.['Content-Type'];
-    const findExtension = mime.getExtension(contentType)!;
+    const findExtension = mime.getExtension(String(contentType))!;
 
     const now = new Date();
     const year = now.getFullYear();

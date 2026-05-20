@@ -92,6 +92,8 @@ export class FarcasterProvider
       let idHash = '';
       for (const post of postDetails) {
         const data = await client.publishCast({
+          // @ts-ignore Neynar SDK type for `embeds` declares cast_id/castId as
+          // required, but the wire API accepts `{ url }` shapes for URL embeds.
           embeds:
             post?.media?.map((media) => ({
               url: media.path,
