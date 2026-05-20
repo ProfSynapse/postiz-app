@@ -1,0 +1,15 @@
+{
+  "name": "nestjs-libraries",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libraries/nestjs-libraries/src",
+  "projectType": "library",
+  "targets": {
+    "test": {
+      "executor": "@nx/jest:jest",
+      "outputs": ["{workspaceRoot}/coverage/libraries/nestjs-libraries"],
+      "options": {
+        "jestConfig": "libraries/nestjs-libraries/jest.config.ts"
+      }
+    }
+  }
+}

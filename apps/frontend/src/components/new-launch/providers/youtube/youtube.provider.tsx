@@ -12,6 +12,7 @@ import { MediumTags } from '@gitroom/frontend/components/new-launch/providers/me
 import { MediaComponent } from '@gitroom/frontend/components/media/media.component';
 import { Select } from '@gitroom/react/form/select';
 import { YoutubePreview } from '@gitroom/frontend/components/new-launch/providers/youtube/youtube.preview';
+import { CaptionUploader } from '@gitroom/frontend/components/new-launch/providers/youtube/caption.uploader';
 const type = [
   {
     label: 'Public',
@@ -75,6 +76,42 @@ const YoutubeSettings: FC = () => {
           label="Thumbnail"
           description="Thumbnail picture (optional)"
           {...register('thumbnail')}
+        />
+      </div>
+      <Input
+        label="Category ID"
+        placeholder="e.g. 22 (People & Blogs)"
+        {...register('categoryId')}
+      />
+      <Input
+        label="Publish at (UTC)"
+        type="datetime-local"
+        {...register('publishAt')}
+      />
+      <div className="-mt-[8px] mb-[6px] text-[12px] text-textColor">
+        YouTube schedules in UTC. Enter the publish time in UTC; requires Type =
+        Private.
+      </div>
+      <Input
+        label="Default language"
+        placeholder="BCP-47 (e.g. en, en-US)"
+        {...register('defaultLanguage')}
+      />
+      <Input
+        label="Recording date"
+        type="date"
+        {...register('recordingDate')}
+      />
+      <Input
+        label="Captions language"
+        placeholder="BCP-47 (e.g. en)"
+        {...register('captionsLanguage', { value: 'en' })}
+      />
+      <div className="mt-[20px]">
+        <CaptionUploader
+          label="Captions"
+          description="Optional SRT or VTT subtitle file."
+          {...register('captions')}
         />
       </div>
     </div>
