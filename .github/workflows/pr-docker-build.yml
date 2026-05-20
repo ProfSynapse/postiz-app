@@ -29,7 +29,9 @@ jobs:
 
       - name: Set image tag
         id: vars
-        run: echo "IMAGE_TAG=ghcr.io/gitroomhq/postiz-app-pr:${{ github.event.pull_request.number }}" >> $GITHUB_ENV
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE_TAG=ghcr.io/$OWNER/postiz-app-pr:${{ github.event.pull_request.number }}" >> $GITHUB_ENV
 
       - name: Build Docker image from Dockerfile.dev
         run: docker build -f Dockerfile.dev -t $IMAGE_TAG .
