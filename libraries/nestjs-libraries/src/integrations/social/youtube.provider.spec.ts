@@ -322,10 +322,24 @@ describe('YoutubeProvider', () => {
       expect(arg.requestBody.snippet.language).toBe('es');
     });
 
-    it("sets mimeType='application/octet-stream' on the captions media body (S8)", async () => {
+    it("derives mimeType from the .srt extension (M14: application/x-subrip)", async () => {
       await provider.post('i', 'token', makePostDetails(captionSettings()));
       const arg = captionsInsert.mock.calls[0][0];
-      expect(arg.media.mimeType).toBe('application/octet-stream');
+      expect(arg.media.mimeType).toBe('application/x-subrip');
+    });
+
+    it("derives mimeType from the .vtt extension (M14: text/vtt)", async () => {
+      await provider.post(
+        'i',
+        'token',
+        makePostDetails(
+          captionSettings({
+            captions: { id: 'cap', path: 'https://cdn.example.com/cap.vtt' },
+          })
+        )
+      );
+      const arg = captionsInsert.mock.calls[0][0];
+      expect(arg.media.mimeType).toBe('text/vtt');
     });
 
     it('captions.insert is called DIRECTLY, NOT via runInConcurrent (S7 anchor)', async () => {
@@ -510,15 +524,49 @@ describe('YoutubeProvider', () => {
       expect(msg.toLowerCase()).toContain('empty');
     });
 
-    it('falls through to a truncated raw error body when no substring matches', async () => {
+    it('falls through to an allowlist-projected, capped error body when no substring matches (M3)', async () => {
+      // M3: fallback now projects to {code,message,status} only, redacts
+      // token-like substrings, and caps at 120 chars. `reason` is NOT in the
+      // allowlist, so the longErr never reaches the log line.
       const longErr = 'x'.repeat(1000);
       const msg = await captureCaptionError({ reason: longErr });
-      // Truncation guard at 500 chars (captionErrorMessage line 480).
-      // The console.error format includes a prefix, so check the err body
-      // length only — strip the "YouTube caption upload failed (non-fatal):"
-      // prefix.
       const stripped = msg.replace(/^.*non-fatal\):\s*/, '');
-      expect(stripped.length).toBeLessThanOrEqual(500);
+      expect(stripped.length).toBeLessThanOrEqual(120);
+      // The unsafe `reason` value must NOT appear (allowlist excludes it).
+      expect(stripped).not.toContain('xxxx');
+    });
+
+    it('M3: surfaces allowlisted fields ({code,message,status}) in the fallback', async () => {
+      const msg = await captureCaptionError({
+        code: 403,
+        message: 'Forbidden',
+        status: 'PERMISSION_DENIED',
+      });
+      const stripped = msg.replace(/^.*non-fatal\):\s*/, '');
+      expect(stripped).toContain('Forbidden');
+      expect(stripped).toContain('403');
+    });
+
+    it('M3: redacts bearer tokens from the fallback log line', async () => {
+      const msg = await captureCaptionError({
+        message:
+          'request failed with Bearer ya29.A0AbCdEfGhIjKlMnOpQrStUvWxYz1234567890',
+      });
+      const stripped = msg.replace(/^.*non-fatal\):\s*/, '');
+      expect(stripped).toContain('[REDACTED]');
+      expect(stripped).not.toContain('ya29.');
+    });
+
+    it('M3: redacts access_token / refresh_token JSON fields from the fallback', async () => {
+      // The message field will carry the JSON-encoded blob.
+      const msg = await captureCaptionError({
+        message:
+          'error: {"access_token":"ya29.SECRET","refresh_token":"1//SECRET"}',
+      });
+      const stripped = msg.replace(/^.*non-fatal\):\s*/, '');
+      expect(stripped).toContain('[REDACTED]');
+      expect(stripped).not.toContain('ya29.SECRET');
+      expect(stripped).not.toContain('1//SECRET');
     });
   });
 });

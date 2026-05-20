@@ -77,6 +77,102 @@ export function buildYoutubeRequestBody(
   return body;
 }
 
+/**
+ * M14: Derive a caption MIME type from a URL/path's extension.
+ * .srt → application/x-subrip
+ * .vtt → text/vtt
+ * fallback → application/octet-stream (defense-in-depth; the upstream validator
+ * rejects non-srt/vtt extensions, so this branch should be unreachable in
+ * validated paths).
+ *
+ * Uses URL.pathname when the input is a full URL so query strings / presigned
+ * signatures don't poison the extension check. Mirrors ValidCaptionUrlExtension.
+ */
+export function captionMimeTypeFromPath(input: string): string {
+  if (typeof input !== 'string' || input.length === 0) {
+    return 'application/octet-stream';
+  }
+  let path: string;
+  try {
+    path = new URL(input).pathname;
+  } catch {
+    path = input.split('#')[0].split('?')[0];
+  }
+  const lower = path.toLowerCase();
+  if (lower.endsWith('.srt')) return 'application/x-subrip';
+  if (lower.endsWith('.vtt')) return 'text/vtt';
+  return 'application/octet-stream';
+}
+
+/**
+ * M3/M13: Redact provider tokens and credential-like substrings from any
+ * stringified error body so log lines never carry secrets. Conservative
+ * pattern set — favors over-redaction at the cost of debuggability. Combine
+ * with the 120-char truncation cap in captionErrorMessage's fallback branch.
+ */
+const TOKEN_REDACTION_PATTERNS: ReadonlyArray<RegExp> = [
+  // Unescaped JSON field: "access_token": "<value>"
+  /"(?:access_token|refresh_token|id_token|bearer|password|client_secret|api[_-]?key)"\s*:\s*"[^"]*"/gi,
+  // JSON-escaped variant when the field is nested inside an outer JSON string:
+  // \"access_token\":\"<value>\"
+  /\\"(?:access_token|refresh_token|id_token|bearer|password|client_secret|api[_-]?key)\\"\s*:\s*\\"[^\\"]*\\"/gi,
+  /Bearer\s+[A-Za-z0-9._\-]+/gi,
+  // Known Google credential shapes:
+  //  - ya29.<...>            (OAuth access token)
+  //  - AIza<...>             (API key)
+  //  - 1//<...>              (OAuth refresh token, prefixed with "1//")
+  /\b(?:ya29\.[A-Za-z0-9._\-]+|AIza[0-9A-Za-z\-_]{20,})\b/g,
+  /1\/\/[A-Za-z0-9._\-]+/g,
+];
+
+export function redactSensitive(input: string): string {
+  let out = input;
+  for (const re of TOKEN_REDACTION_PATTERNS) {
+    out = out.replace(re, '[REDACTED]');
+  }
+  return out;
+}
+
+/**
+ * M3/M13: Build a safe, 120-char-capped fallback string for caption upload
+ * failures whose error shape did not match any known substring. We project
+ * the error to an allowlist of safe fields (code, message, status) before
+ * stringifying so unknown nested data (request bodies, headers, gaxios
+ * config) never reaches the log line, then redact known token patterns
+ * as a second line of defense.
+ */
+const SAFE_ERROR_FIELDS: ReadonlyArray<string> = ['code', 'message', 'status'];
+const CAPTION_ERROR_FALLBACK_MAX = 120;
+
+export function buildSafeCaptionErrorFallback(err: unknown): string {
+  if (err == null) return '';
+  const projection: Record<string, unknown> = {};
+  if (typeof err === 'object') {
+    const source = err as Record<string, unknown>;
+    for (const field of SAFE_ERROR_FIELDS) {
+      const value = source[field];
+      if (
+        value !== undefined &&
+        (typeof value === 'string' ||
+          typeof value === 'number' ||
+          typeof value === 'boolean')
+      ) {
+        projection[field] = value;
+      }
+    }
+  } else if (
+    typeof err === 'string' ||
+    typeof err === 'number' ||
+    typeof err === 'boolean'
+  ) {
+    projection.message = String(err);
+  }
+  const serialized = Object.keys(projection).length
+    ? JSON.stringify(projection)
+    : '[unrecognized error shape]';
+  return redactSensitive(serialized).slice(0, CAPTION_ERROR_FALLBACK_MAX);
+}
+
 const clientAndYoutube = () => {
   const client = new google.auth.OAuth2({
     clientId: process.env.YOUTUBE_CLIENT_ID,
@@ -422,6 +518,11 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
           responseType: 'stream',
         });
 
+        // M14: derive MIME type from the path extension so YouTube's content
+        // negotiation receives an accurate hint. Falls back to octet-stream
+        // when the extension is unknown (validator already rejects non-srt/vtt,
+        // so the fallback is a defense-in-depth only).
+        const captionMimeType = captionMimeTypeFromPath(settings.captions.path);
         await youtubeClient.captions.insert({
           part: ['snippet'],
           requestBody: {
@@ -434,7 +535,7 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
           },
           media: {
             body: captionStream.data,
-            mimeType: 'application/octet-stream', // S8
+            mimeType: captionMimeType,
           },
         });
       } catch (err) {
@@ -462,6 +563,12 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
    * Map caption-specific errors to user-friendly strings WITHOUT going through
    * handleErrors() — handleErrors can return type:'refresh-token' which would
    * escalate to an exception via runInConcurrent and defeat S7 isolation.
+   *
+   * M3/M13: The fallback branch is hardened — instead of stringifying the
+   * entire error (which may carry OAuth tokens, refresh tokens, or full
+   * request bodies via gaxios error wrapping), we build a minimal
+   * allowlist-projection ({code, message, status}), redact known
+   * token/credential patterns, and cap the result at 120 chars.
    */
   private captionErrorMessage(err: unknown): string {
     const body = JSON.stringify(err ?? '');
@@ -477,7 +584,7 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
     if (body.includes('contentRequired')) {
       return 'Caption file is empty or could not be fetched.';
     }
-    return body.slice(0, 500);
+    return buildSafeCaptionErrorFallback(err);
   }
 
   async analytics(

@@ -5,19 +5,13 @@ import { Dashboard, FileInput } from '@uppy/react';
 import { useUppyUploader } from '@gitroom/frontend/components/media/new.uploader';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { Button } from '@gitroom/react/form/button';
-// TODO: import { CaptionMediaDto } from '@gitroom/nestjs-libraries/dtos/media/caption.media.dto';
-// Backend peer is producing CaptionMediaDto in the same feature; until that lands,
-// this component emits a value of the same shape as MediaDto (id, path, alt?, thumbnail?).
+import { useToaster } from '@gitroom/react/toaster/toaster';
+import type { CaptionMediaDto } from '@gitroom/nestjs-libraries/dtos/media/caption.media.dto';
 
 const ALLOWED_FILE_TYPES =
   '.srt,.vtt,text/vtt,application/x-subrip,application/octet-stream';
 
-type CaptionValue = {
-  id: string;
-  path: string;
-  alt?: string;
-  thumbnail?: string;
-};
+type CaptionValue = CaptionMediaDto;
 
 export const CaptionUploader: FC<{
   label: string;
@@ -33,6 +27,8 @@ export const CaptionUploader: FC<{
 }> = (props) => {
   const { label, description, name, value, onChange } = props;
   const t = useT();
+  const toast = useToaster();
+  const fileInputId = `caption-uploader-${name}`;
   const [currentCaption, setCurrentCaption] = useState<CaptionValue | undefined>(
     value
   );
@@ -67,6 +63,24 @@ export const CaptionUploader: FC<{
     onUploadSuccess: handleUploadSuccess,
   });
 
+  useEffect(() => {
+    const handleUploadError = () => {
+      toast.show(
+        t(
+          'caption_upload_failed',
+          'Caption upload failed. Please try selecting the file again.'
+        ),
+        'warning'
+      );
+    };
+    uppy.on('upload-error', handleUploadError);
+    uppy.on('restriction-failed', handleUploadError);
+    return () => {
+      uppy.off('upload-error', handleUploadError);
+      uppy.off('restriction-failed', handleUploadError);
+    };
+  }, [uppy, toast, t]);
+
   const clearCaption = useCallback(() => {
     setCurrentCaption(undefined);
     onChange({ target: { name, value: undefined } });
@@ -80,7 +94,9 @@ export const CaptionUploader: FC<{
 
   return (
     <div className="flex flex-col gap-[8px]">
-      <div className="text-[14px]">{label}</div>
+      <label htmlFor={fileInputId} className="text-[14px]">
+        {label}
+      </label>
       {!!description && <div className="text-[12px]">{description}</div>}
       {!!currentCaption?.path && (
         <div className="text-[12px] text-textColor break-all">
@@ -92,7 +108,7 @@ export const CaptionUploader: FC<{
           <Dashboard
             height={46}
             uppy={uppy}
-            id={`caption-uploader-${name}`}
+            id={fileInputId}
             showProgressDetails={true}
             hideUploadButton={true}
             hideRetryButton={true}

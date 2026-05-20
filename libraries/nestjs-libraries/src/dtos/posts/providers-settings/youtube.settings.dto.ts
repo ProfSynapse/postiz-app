@@ -24,6 +24,8 @@ import {
   ValidateIf,
   ValidateNested,
 } from 'class-validator';
+// Note: IsISO8601 is retained on `publishAt` (YouTube accepts full datetime there).
+// recordingDate uses @Matches(/^\d{4}-\d{2}-\d{2}$/) instead per M10.
 import { MediaDto } from '@gitroom/nestjs-libraries/dtos/media/media.dto';
 import { CaptionMediaDto } from '@gitroom/nestjs-libraries/dtos/media/caption.media.dto';
 import { Type } from 'class-transformer';
@@ -69,6 +71,7 @@ export class YoutubeSettingsDto {
   tags: YoutubeTagsSettings[];
 
   @IsString()
+  @MaxLength(10)
   @Matches(/^\d+$/, {
     message:
       'categoryId must be a numeric string (see YouTube videoCategories.list).',
@@ -93,6 +96,7 @@ export class YoutubeSettingsDto {
   publishAt?: string;
 
   @IsString()
+  @MaxLength(35)
   @Matches(/^[a-zA-Z]{2,3}(-[a-zA-Z]{2,4})?$/, {
     message:
       'defaultLanguage must be a BCP-47 tag (e.g., "en", "en-US", "zh-Hant").',
@@ -105,17 +109,32 @@ export class YoutubeSettingsDto {
   })
   defaultLanguage?: string;
 
+  // M10: YouTube recordingDetails.recordingDate is date-only (RFC 3339 full-date).
+  // A datetime form is silently accepted by @IsISO8601 but rejected by the YouTube
+  // API, so we stack @IsISO8601 (semantic validity) with @Matches (date-only
+  // format). Order matters: @IsISO8601 runs alongside @Matches; both must pass.
+  @IsString()
   @IsISO8601()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, {
+    message:
+      'recordingDate must be a date-only ISO 8601 string (YYYY-MM-DD); YouTube rejects datetimes.',
+  })
   @IsOptional()
   @ApiProperty({
     required: false,
     description:
-      'ISO 8601 date the video was recorded. Forwarded to YouTube recordingDetails.recordingDate.',
+      'ISO 8601 date (YYYY-MM-DD) the video was recorded. Forwarded to YouTube recordingDetails.recordingDate.',
     example: '2026-05-15',
   })
   recordingDate?: string;
 
+  // M1: captionsLanguage is meaningful only when a caption file is attached.
+  // Standalone use was previously accepted as a silent no-op; the @ValidateIf
+  // gate makes it explicit. When captions.path is absent, the field is ignored
+  // (the entire chain short-circuits).
+  @ValidateIf((o) => o.captions?.path)
   @IsString()
+  @MaxLength(35)
   @Matches(/^[a-zA-Z]{2,3}(-[a-zA-Z]{2,4})?$/, {
     message: 'captionsLanguage must be a BCP-47 tag.',
   })
@@ -123,7 +142,7 @@ export class YoutubeSettingsDto {
   @ApiProperty({
     required: false,
     description:
-      'BCP-47 language tag for the caption track. Defaults to "en" when captions is set.',
+      'BCP-47 language tag for the caption track. Defaults to "en" when captions is set. Only validated when captions.path is also set.',
     example: 'en',
   })
   captionsLanguage?: string;

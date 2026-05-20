@@ -84,10 +84,14 @@ const YoutubeSettings: FC = () => {
         {...register('categoryId')}
       />
       <Input
-        label="Publish at"
+        label="Publish at (UTC)"
         type="datetime-local"
         {...register('publishAt')}
       />
+      <div className="-mt-[8px] mb-[6px] text-[12px] text-textColor">
+        YouTube schedules in UTC. Enter the publish time in UTC; requires Type =
+        Private.
+      </div>
       <Input
         label="Default language"
         placeholder="BCP-47 (e.g. en, en-US)"

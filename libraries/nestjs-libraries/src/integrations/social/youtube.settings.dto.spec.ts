@@ -84,6 +84,31 @@ describe('YoutubeSettingsDto — backwards compatibility', () => {
   });
 });
 
+describe('YoutubeSettingsDto — selfDeclaredMadeForKids (M8 omitted-branch)', () => {
+  // M8: explicit branch coverage for the @IsOptional() field being absent from
+  // the body. buildYoutubeStatus() in youtube.provider.ts:52 evaluates
+  // `settings.selfDeclaredMadeForKids === 'yes'` — undefined coerces to false.
+  // A regression that flipped the strict-equality to `!== 'no'` would silently
+  // change omitted-input behavior. Anchor that branch here.
+  it('passes validation when selfDeclaredMadeForKids is omitted entirely', async () => {
+    const { selfDeclaredMadeForKids: _omit, ...withoutKidsFlag } = legacy;
+    void _omit; // discard
+    await expectValid(withoutKidsFlag);
+  });
+
+  it('accepts the legacy enum values explicitly (no-regression anchor)', async () => {
+    await expectValid({ ...legacy, selfDeclaredMadeForKids: 'yes' });
+    await expectValid({ ...legacy, selfDeclaredMadeForKids: 'no' });
+  });
+
+  it('rejects a value outside the {yes,no} enum', async () => {
+    await expectInvalidOn(
+      { ...legacy, selfDeclaredMadeForKids: 'maybe' },
+      'selfDeclaredMadeForKids'
+    );
+  });
+});
+
 describe('YoutubeSettingsDto — categoryId', () => {
   it('passes when omitted (decorator-order regression guard)', async () => {
     await expectValid(legacy);
@@ -202,15 +227,23 @@ describe('YoutubeSettingsDto — recordingDate', () => {
     await expectValid(legacy);
   });
 
-  it('accepts an ISO 8601 date', async () => {
+  it('accepts an ISO 8601 date (YYYY-MM-DD)', async () => {
     await expectValid({ ...legacy, recordingDate: '2026-05-15' });
   });
 
-  it('accepts an ISO 8601 datetime', async () => {
-    await expectValid({
-      ...legacy,
-      recordingDate: '2026-05-15T10:00:00.000Z',
-    });
+  it('M10: rejects an ISO 8601 datetime (YouTube API rejects non-date forms)', async () => {
+    const err = await expectInvalidOn(
+      { ...legacy, recordingDate: '2026-05-15T10:00:00.000Z' },
+      'recordingDate'
+    );
+    expect(err.constraints).toHaveProperty('matches');
+  });
+
+  it('M10: rejects a date with trailing whitespace', async () => {
+    await expectInvalidOn(
+      { ...legacy, recordingDate: '2026-05-15 ' },
+      'recordingDate'
+    );
   });
 
   it('rejects an invalid date string', async () => {
@@ -222,20 +255,109 @@ describe('YoutubeSettingsDto — recordingDate', () => {
 });
 
 describe('YoutubeSettingsDto — captionsLanguage', () => {
-  it('passes when omitted', async () => {
+  const withCaptionsAttached = (extra: Record<string, unknown> = {}) => ({
+    ...legacy,
+    captions: { id: 'cap-1', path: 'https://cdn.example.com/captions.srt' },
+    ...extra,
+  });
+
+  it('M1: passes when omitted with no captions attached', async () => {
     await expectValid(legacy);
   });
 
-  it('accepts a BCP-47 tag', async () => {
+  it('M1: passes when value is set but captions is absent (gated by @ValidateIf — value ignored)', async () => {
     await expectValid({ ...legacy, captionsLanguage: 'en' });
-    await expectValid({ ...legacy, captionsLanguage: 'pt-BR' });
   });
 
-  it('rejects a string with digits', async () => {
+  it('accepts a BCP-47 tag when captions are attached', async () => {
+    await expectValid(withCaptionsAttached({ captionsLanguage: 'en' }));
+    await expectValid(withCaptionsAttached({ captionsLanguage: 'pt-BR' }));
+  });
+
+  it('M1: rejects a malformed tag when captions are attached (gate fires)', async () => {
     await expectInvalidOn(
-      { ...legacy, captionsLanguage: 'en1' },
+      withCaptionsAttached({ captionsLanguage: 'en1' }),
       'captionsLanguage'
     );
+  });
+});
+
+describe('YoutubeSettingsDto — M15 length caps', () => {
+  it('M15: rejects categoryId longer than 10 chars', async () => {
+    await expectInvalidOn(
+      { ...legacy, categoryId: '12345678901' },
+      'categoryId'
+    );
+  });
+
+  it('M15: rejects defaultLanguage longer than 35 chars', async () => {
+    await expectInvalidOn(
+      { ...legacy, defaultLanguage: 'a'.repeat(36) },
+      'defaultLanguage'
+    );
+  });
+
+  it('M15: rejects captionsLanguage longer than 35 chars (when captions attached)', async () => {
+    await expectInvalidOn(
+      {
+        ...legacy,
+        captions: { id: 'cap-1', path: 'https://cdn.example.com/captions.srt' },
+        captionsLanguage: 'a'.repeat(36),
+      },
+      'captionsLanguage'
+    );
+  });
+
+  it('M15: accepts categoryId at boundary (10 chars)', async () => {
+    await expectValid({ ...legacy, categoryId: '1234567890' });
+  });
+});
+
+describe('YoutubeSettingsDto — M11 presigned URL acceptance', () => {
+  it('M11: accepts captions.path with multi-key query string (presigned-style)', async () => {
+    await expectValid({
+      ...legacy,
+      captions: {
+        id: 'cap-1',
+        path: 'https://bucket.s3.amazonaws.com/folder/captions.srt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=deadbeef',
+      },
+    });
+  });
+
+  it('M11: accepts captions.path with fragment after the extension', async () => {
+    await expectValid({
+      ...legacy,
+      captions: {
+        id: 'cap-1',
+        path: 'https://cdn.example.com/captions.vtt#track1',
+      },
+    });
+  });
+
+  it('M11: accepts captions.path with uppercase extension', async () => {
+    await expectValid({
+      ...legacy,
+      captions: {
+        id: 'cap-1',
+        path: 'https://cdn.example.com/CAPTIONS.SRT',
+      },
+    });
+  });
+
+  it('M11: still rejects an extensionless presigned URL', async () => {
+    const err = await expectInvalidOn(
+      {
+        ...legacy,
+        captions: {
+          id: 'cap-1',
+          path: 'https://bucket.s3.amazonaws.com/abc123def?X-Amz-Signature=xyz',
+        },
+      },
+      'captions'
+    );
+    const pathErr = err.children?.find((c) => c.property === 'path');
+    expect(pathErr).toBeDefined();
+    expect(JSON.stringify(pathErr?.constraints)).toContain('extension');
   });
 });
 
@@ -282,6 +404,24 @@ describe('YoutubeSettingsDto — captions (nested CaptionMediaDto)', () => {
     );
     // Nested validation surface — the child's `path` constraint should fail
     // via ValidCaptionUrlExtension.
+    const pathErr = err.children?.find((c) => c.property === 'path');
+    expect(pathErr).toBeDefined();
+    expect(JSON.stringify(pathErr?.constraints)).toContain('extension');
+  });
+
+  it('rejects captions.path with a .txt extension (M7 explicit symmetry with .mp4)', async () => {
+    // M7: .srt and .vtt are the only accepted caption extensions per
+    // valid.caption.url.path.ts. A regression that loosens
+    // ValidCaptionUrlExtension to accept .txt (e.g., adding plain-text caption
+    // support without YouTube API alignment) would silently widen the surface.
+    // Anchor .txt rejection symmetrically with the existing .mp4 case.
+    const err = await expectInvalidOn(
+      {
+        ...legacy,
+        captions: { id: 'cap-1', path: 'https://cdn.example.com/captions.txt' },
+      },
+      'captions'
+    );
     const pathErr = err.children?.find((c) => c.property === 'path');
     expect(pathErr).toBeDefined();
     expect(JSON.stringify(pathErr?.constraints)).toContain('extension');
@@ -359,6 +499,22 @@ describe('CaptionMediaDto — direct validation', () => {
       plainToInstance(CaptionMediaDto, {
         id: 'x',
         path: 'https://cdn.example.com/file',
+      })
+    );
+    const pathErr = errors.find((e) => e.property === 'path');
+    expect(pathErr).toBeDefined();
+    expect(JSON.stringify(pathErr?.constraints)).toContain('extension');
+  });
+
+  it('rejects path ending in .txt at the direct-validation layer (M7)', async () => {
+    // M7 mirror: a CaptionMediaDto instance constructed without going through
+    // the parent YoutubeSettingsDto must also reject .txt. Future callers may
+    // validate CaptionMediaDto in isolation (e.g., an MCP tool route); this
+    // guards them too.
+    const errors = await validate(
+      plainToInstance(CaptionMediaDto, {
+        id: 'x',
+        path: 'https://cdn.example.com/captions.txt',
       })
     );
     const pathErr = errors.find((e) => e.property === 'path');
