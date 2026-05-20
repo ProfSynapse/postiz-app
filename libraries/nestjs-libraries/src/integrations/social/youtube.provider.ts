@@ -20,6 +20,63 @@ import { GaxiosResponse } from 'gaxios/build/src/common';
 import Schema$Video = youtube_v3.Schema$Video;
 import { Rules } from '@gitroom/nestjs-libraries/chat/rules.description.decorator';
 
+/**
+ * Pure builders for the YouTube videos.insert request body. Exported so test-engineer
+ * Phase 2 can unit-test request-body composition without invoking the googleapis
+ * client factory. Each builder returns a fresh object/array per call — never mutate
+ * a module-scoped value (S9 shared-mutable-array regression guard).
+ */
+export function buildYoutubeSnippet(
+  settings: YoutubeSettingsDto,
+  message: string
+) {
+  return {
+    title: settings.title,
+    description: message,
+    ...(settings?.tags?.length
+      ? { tags: settings.tags.map((p) => p.label) }
+      : {}),
+    ...(settings.categoryId ? { categoryId: settings.categoryId } : {}),
+    ...(settings.defaultLanguage
+      ? { defaultLanguage: settings.defaultLanguage }
+      : {}),
+  };
+}
+
+export function buildYoutubeStatus(settings: YoutubeSettingsDto) {
+  // S3 belt-and-suspenders: even though the DTO rejects publishAt + non-private,
+  // coerce here so a bad client that bypassed validation still produces a
+  // YouTube-compatible request body.
+  const status: Record<string, unknown> = {
+    privacyStatus: settings.publishAt ? 'private' : settings.type,
+    selfDeclaredMadeForKids: settings.selfDeclaredMadeForKids === 'yes',
+  };
+  if (settings.publishAt) status.publishAt = settings.publishAt;
+  return status;
+}
+
+export function buildYoutubePartArray(settings: YoutubeSettingsDto): string[] {
+  // Fresh array per invocation — do NOT lift to module scope or push onto a
+  // shared array. Two-consecutive-calls regression guard (S9).
+  const part = ['id', 'snippet', 'status'];
+  if (settings.recordingDate) part.push('recordingDetails');
+  return part;
+}
+
+export function buildYoutubeRequestBody(
+  settings: YoutubeSettingsDto,
+  message: string
+) {
+  const body: Record<string, unknown> = {
+    snippet: buildYoutubeSnippet(settings, message),
+    status: buildYoutubeStatus(settings),
+  };
+  if (settings.recordingDate) {
+    body.recordingDetails = { recordingDate: settings.recordingDate };
+  }
+  return body;
+}
+
 const clientAndYoutube = () => {
   const client = new google.auth.OAuth2({
     clientId: process.env.YOUTUBE_CLIENT_ID,
@@ -114,6 +171,22 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
         type: 'bad-body',
         value:
           'Your account is not verified, we have uploaded your video but we could not set the thumbnail. Please verify your account and try again.',
+      };
+    }
+
+    if (body.includes('invalidPublishAt')) {
+      return {
+        type: 'bad-body',
+        value:
+          'The scheduled publish time is invalid (must be a future ISO 8601 timestamp with privacyStatus=private).',
+      };
+    }
+
+    if (body.includes('invalidCategoryId')) {
+      return {
+        type: 'bad-body',
+        value:
+          "The provided YouTube category ID is not valid or not assignable in this channel's region.",
       };
     }
 
@@ -291,6 +364,17 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
 
     const { settings }: { settings: YoutubeSettingsDto } = firstPost;
 
+    // S3 belt-and-suspenders: DTO already rejects publishAt + non-private at
+    // ValidationPipe; this guards against any caller that bypasses the DTO.
+    if (settings.publishAt && settings.type !== 'private') {
+      throw new BadBody(
+        'publishAt-requires-private',
+        JSON.stringify({}),
+        {} as any,
+        'When publishAt is set, type must be "private" — YouTube requires this.'
+      );
+    }
+
     const response = await axios({
       url: firstPost?.media?.[0]?.path,
       method: 'GET',
@@ -300,22 +384,9 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
     const all: GaxiosResponse<Schema$Video> = await this.runInConcurrent(
       async () =>
         youtubeClient.videos.insert({
-          part: ['id', 'snippet', 'status'],
+          part: buildYoutubePartArray(settings),
           notifySubscribers: true,
-          requestBody: {
-            snippet: {
-              title: settings.title,
-              description: firstPost?.message,
-              ...(settings?.tags?.length
-                ? { tags: settings.tags.map((p) => p.label) }
-                : {}),
-            },
-            status: {
-              privacyStatus: settings.type,
-              selfDeclaredMadeForKids:
-                settings.selfDeclaredMadeForKids === 'yes',
-            },
-          },
+          requestBody: buildYoutubeRequestBody(settings, firstPost?.message),
           media: {
             body: response.data,
           },
@@ -340,6 +411,43 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
       );
     }
 
+    // S7: direct call (NOT runInConcurrent) so caption failures stay local
+    // and do not get re-thrown as RefreshToken/BadBody by handleErrors().
+    // S14: failure is silent (logged only) — never fails the post.
+    if (settings?.captions?.path) {
+      try {
+        const captionStream = await axios({
+          url: settings.captions.path,
+          method: 'GET',
+          responseType: 'stream',
+        });
+
+        await youtubeClient.captions.insert({
+          part: ['snippet'],
+          requestBody: {
+            snippet: {
+              videoId: all?.data?.id!,
+              language: settings.captionsLanguage ?? 'en', // S10
+              name: '',
+              isDraft: false,
+            },
+          },
+          media: {
+            body: captionStream.data,
+            mimeType: 'application/octet-stream', // S8
+          },
+        });
+      } catch (err) {
+        // S12: tolerate captionExists (idempotent re-upload) as soft-success.
+        // S14: any other caption error is logged and swallowed.
+        const message = this.captionErrorMessage(err);
+        console.error(
+          'YouTube caption upload failed (non-fatal):',
+          message
+        );
+      }
+    }
+
     return [
       {
         id: firstPost.id,
@@ -348,6 +456,28 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
         status: 'success',
       },
     ];
+  }
+
+  /**
+   * Map caption-specific errors to user-friendly strings WITHOUT going through
+   * handleErrors() — handleErrors can return type:'refresh-token' which would
+   * escalate to an exception via runInConcurrent and defeat S7 isolation.
+   */
+  private captionErrorMessage(err: unknown): string {
+    const body = JSON.stringify(err ?? '');
+    if (body.includes('captionExists')) {
+      return 'Caption track already exists for this language (treated as soft-success).';
+    }
+    if (body.includes('insufficientPermissions')) {
+      return 'Caption upload requires the youtube.force-ssl scope. Please reconnect this YouTube channel.';
+    }
+    if (body.includes('invalidMetadata')) {
+      return 'Caption metadata is invalid (check captionsLanguage BCP-47 tag).';
+    }
+    if (body.includes('contentRequired')) {
+      return 'Caption file is empty or could not be fetched.';
+    }
+    return body.slice(0, 500);
   }
 
   async analytics(
