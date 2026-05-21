@@ -3,15 +3,42 @@ import { ApiTags } from '@nestjs/swagger';
 import { PrismaService } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 import { BullMqClient } from '@gitroom/nestjs-libraries/bull-mq-transport-new/client';
+import {
+  KNOWN_QUEUE_PATTERNS,
+  POST_QUEUE_PATTERN,
+  KnownQueuePattern,
+} from '@gitroom/nestjs-libraries/bull-mq-transport-new/queues.constants';
 
 const PROBE_TIMEOUT_MS = 3000;
 
+// Delayed-job staleness threshold for the post queue.
+//
+// BullMQ stores delayed jobs in a sorted set (key `bull:<queue>:delayed`)
+// scored by fire-time in ms-epoch. ZCOUNT key -inf (now-THRESHOLD_MS) counts
+// jobs whose fire-time was supposed to occur >THRESHOLD_MS ago and are still
+// pending — i.e. workers are not draining the delayed queue in time.
+//
+// 60_000 ms (60s) was chosen as the starting point because the 2026-05-21
+// incident left a post in bull:post:delayed for 132 minutes; a 60-second
+// threshold would have surfaced that failure within ~1 minute of fire-time
+// lag, well before the 132-minute mark. A future maintainer can tune this
+// (lower = more sensitive, higher = more tolerant of brief worker pauses).
+const DELAYED_STALENESS_THRESHOLD_MS = 60_000;
+
 type ProbeStatus = 'ok' | 'fail';
+
+interface BullMqProbeBody {
+  status: ProbeStatus;
+  workers: Record<KnownQueuePattern, number>;
+  delayedStale: { queue: string; count: number; thresholdMs: number };
+  error?: string;
+}
 
 interface DeepHealthBody {
   redis: ProbeStatus;
   postgres: ProbeStatus;
   bullmq: ProbeStatus;
+  bullmqDetail?: BullMqProbeBody;
   errors?: string[];
 }
 
@@ -56,14 +83,21 @@ export class HealthController {
   ) {}
 
   /**
-   * Deep healthcheck — probes Redis, Postgres, and BullMQ-bearing Redis
-   * connectivity. Returns 200 when all probes pass; 503 with per-probe
-   * status + sanitized error strings otherwise.
+   * Deep healthcheck — probes Redis, Postgres, and BullMQ liveness.
    *
-   * BullMQ probe note: BullMQ uses the shared `ioRedis` connection, so the
-   * dominant failure mode (Redis unreachable / wrong DNS family) surfaces as
-   * a Redis probe failure. The BullMQ probe additionally verifies BullMQ's
-   * own queue infrastructure is reachable by pinging via the shared client.
+   * BullMQ probe (post 2026-05-21 incident hardening):
+   *   (a) Worker-liveness: for each KNOWN_QUEUE_PATTERN, call
+   *       queue.getWorkers() and require count > 0. Any queue with zero
+   *       connected workers fails the probe.
+   *   (b) Delayed-job staleness: for the `post` queue specifically,
+   *       ZCOUNT bull:post:delayed -inf (now - DELAYED_STALENESS_THRESHOLD_MS).
+   *       If count > 0, the scheduler is silently stuck — jobs whose
+   *       fire-time is in the past are not being drained.
+   *
+   * Returns 200 only if redis, postgres, AND both bullmq sub-checks pass.
+   * Returns 503 with per-probe status + sanitized error strings + a
+   * bullmqDetail object (worker counts + delayed-stale count) otherwise so
+   * monitoring tools can route on the specific failure mode.
    */
   @Get('/deep')
   async deep(): Promise<DeepHealthBody> {
@@ -88,6 +122,7 @@ export class HealthController {
       redis: redisResult.status,
       postgres: postgresResult.status,
       bullmq: bullmqResult.status,
+      bullmqDetail: bullmqResult,
     };
 
     if (errors.length > 0) {
@@ -125,22 +160,77 @@ export class HealthController {
     }
   }
 
-  private async probeBullMq(): Promise<{ status: ProbeStatus; error?: string }> {
+  private async probeBullMq(): Promise<BullMqProbeBody> {
+    // Initialize per-queue worker counts to -1 (sentinel: "not probed").
+    // If withTimeout / aggregation fails, the response still shows which
+    // queues were never reached vs. which returned 0 workers.
+    const workers: Record<KnownQueuePattern, number> = Object.fromEntries(
+      KNOWN_QUEUE_PATTERNS.map((q) => [q, -1])
+    ) as Record<KnownQueuePattern, number>;
+    const delayedStale = {
+      queue: POST_QUEUE_PATTERN,
+      count: -1,
+      thresholdMs: DELAYED_STALENESS_THRESHOLD_MS,
+    };
+
     try {
-      // Probe BullMQ-bearing Redis connectivity without creating a persistent
-      // queue. BullMQ uses the shared `ioRedis` instance, so pinging it here
-      // verifies the same connection BullMQ workers and producers rely on.
-      // If a separate BullMQ-specific health signal is needed in the future,
-      // expand this probe to call `queue.client.then(c => c.ping())` on a
-      // dedicated, properly-closed health queue.
-      const client = this._bullMqClient;
-      if (!client) {
-        return { status: 'fail', error: 'bullmq client unavailable' };
+      if (!this._bullMqClient) {
+        return {
+          status: 'fail',
+          workers,
+          delayedStale,
+          error: 'bullmq client unavailable',
+        };
       }
-      await withTimeout('bullmq', Promise.resolve(ioRedis.ping()), PROBE_TIMEOUT_MS);
-      return { status: 'ok' };
+
+      const probe = async () => {
+        // (a) Worker-liveness per queue.
+        await Promise.all(
+          KNOWN_QUEUE_PATTERNS.map(async (pattern) => {
+            const queue = this._bullMqClient.getQueue(pattern);
+            const queueWorkers = await queue.getWorkers();
+            workers[pattern] = queueWorkers?.length ?? 0;
+          })
+        );
+
+        // (b) Delayed-job staleness on the post queue.
+        // BullMQ key: `bull:<queue>:delayed`, scored by fire-time-ms.
+        const cutoff = Date.now() - DELAYED_STALENESS_THRESHOLD_MS;
+        const staleKey = `bull:${POST_QUEUE_PATTERN}:delayed`;
+        delayedStale.count = await ioRedis.zcount(staleKey, '-inf', cutoff);
+      };
+
+      await withTimeout('bullmq', probe(), PROBE_TIMEOUT_MS);
+
+      const zeroWorkerQueues = KNOWN_QUEUE_PATTERNS.filter(
+        (q) => workers[q] === 0
+      );
+      if (zeroWorkerQueues.length > 0) {
+        return {
+          status: 'fail',
+          workers,
+          delayedStale,
+          error: `queues with zero workers: ${zeroWorkerQueues.join(', ')}`,
+        };
+      }
+
+      if (delayedStale.count > 0) {
+        return {
+          status: 'fail',
+          workers,
+          delayedStale,
+          error: `${delayedStale.count} delayed job(s) on ${POST_QUEUE_PATTERN} aged >${DELAYED_STALENESS_THRESHOLD_MS}ms past fire-time`,
+        };
+      }
+
+      return { status: 'ok', workers, delayedStale };
     } catch (err) {
-      return { status: 'fail', error: describeError(err) };
+      return {
+        status: 'fail',
+        workers,
+        delayedStale,
+        error: describeError(err),
+      };
     }
   }
 }
