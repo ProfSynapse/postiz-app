@@ -168,6 +168,45 @@ describeIfDb('MediaJanitorRepository.findSoftDeleteCandidates (integration)', (p
       // future per-tenant scoping is a CONSCIOUS DECISION (the test will
       // need to change). Documenting the global-scope choice from plan
       // §Risk Register R12.
+      // Per-test cross-tenant scaffolding: seed org-A (Media owner) and
+      // org-B (Post owner) inline rather than polluting the generic
+      // seedPrerequisites helper with test-specific tenant rows. Also seed
+      // 'org-test' + 'integration-test' here (the postFactory + mediaFactory
+      // defaults) because this is the only test in candidate-query.spec.ts
+      // that does NOT call seedScenario — so we cannot rely on seedScenario's
+      // call to seedPrerequisites having already run within this test's
+      // Jest worker (test-ordering or --testNamePattern isolation can
+      // reorder it). Matches seedPrerequisites' canonical organizationId
+      // wiring for 'integration-test' (→ 'org-test') to avoid divergence if
+      // both seed paths run in the same worker.
+      await prisma.organization.upsert({
+        where: { id: 'org-test' },
+        update: {},
+        create: { id: 'org-test', name: 'Test Org' },
+      });
+      await prisma.organization.upsert({
+        where: { id: 'org-A' },
+        update: {},
+        create: { id: 'org-A', name: 'Test Org A' },
+      });
+      await prisma.organization.upsert({
+        where: { id: 'org-B' },
+        update: {},
+        create: { id: 'org-B', name: 'Test Org B' },
+      });
+      await prisma.integration.upsert({
+        where: { id: 'integration-test' },
+        update: {},
+        create: {
+          id: 'integration-test',
+          internalId: 'integration-test-internal',
+          organizationId: 'org-test',
+          name: 'Test Integration',
+          providerIdentifier: 'test-provider',
+          type: 'social',
+          token: 'test-token',
+        },
+      });
       const media = mediaFactory({ organizationId: 'org-A' });
       await prisma.media.create({ data: media });
       await prisma.post.create({

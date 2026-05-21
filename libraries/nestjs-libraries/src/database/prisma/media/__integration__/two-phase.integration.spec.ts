@@ -133,6 +133,7 @@ describeIfDb('MediaJanitorRepository two-phase state machine (integration)', (pr
           pictureId: mediaId,
           providerName: 'LOCAL',
           name: 'Test',
+          timezone: 0,
         },
       });
 
@@ -156,6 +157,7 @@ describeIfDb('MediaJanitorRepository two-phase state machine (integration)', (pr
           email: `agency-owner-${mediaId}@example.test`,
           providerName: 'LOCAL',
           name: 'Agency Owner',
+          timezone: 0,
         },
       });
       await prisma.socialMediaAgency.create({
@@ -256,6 +258,7 @@ describeIfDb('MediaJanitorRepository two-phase state machine (integration)', (pr
           pictureId: media.id,
           providerName: 'LOCAL',
           name: 'Test',
+          timezone: 0,
         },
       });
       const outcomes = await repository.hardDeleteBatch({
