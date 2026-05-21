@@ -31,11 +31,13 @@ jest.mock('bullmq', () => {
       __tag: 'Queue',
       __id: ++queueId,
       pattern,
+      close: jest.fn().mockResolvedValue(undefined),
     })),
     QueueEvents: jest.fn().mockImplementation((pattern: string) => ({
       __tag: 'QueueEvents',
       __id: ++queueEventsId,
       pattern,
+      close: jest.fn().mockResolvedValue(undefined),
     })),
   };
 });
@@ -118,5 +120,48 @@ describe('BullMqClient queue/queueEvents caching (leak fix)', () => {
     expect((QueueEvents as unknown as jest.Mock).mock.calls.length).toBe(1);
     expect(client.queues.size).toBe(1);
     expect(client.queueEvents.size).toBe(1);
+  });
+});
+
+describe('BullMqClient onModuleDestroy / close (lifecycle drain)', () => {
+  it('onModuleDestroy closes every cached Queue + QueueEvents and clears the Maps', async () => {
+    const client = new BullMqClient();
+    const q1 = client.getQueue('post');
+    const q2 = client.getQueue('cron');
+    const qe1 = client.getQueueEvents('post');
+
+    await client.onModuleDestroy();
+
+    expect(q1.close).toHaveBeenCalledTimes(1);
+    expect(q2.close).toHaveBeenCalledTimes(1);
+    expect(qe1.close).toHaveBeenCalledTimes(1);
+    expect(client.queues.size).toBe(0);
+    expect(client.queueEvents.size).toBe(0);
+  });
+
+  it('close() delegates to onModuleDestroy (single drain path)', async () => {
+    const client = new BullMqClient();
+    const q = client.getQueue('post');
+    const qe = client.getQueueEvents('post');
+
+    await client.close();
+
+    expect(q.close).toHaveBeenCalledTimes(1);
+    expect(qe.close).toHaveBeenCalledTimes(1);
+    expect(client.queues.size).toBe(0);
+    expect(client.queueEvents.size).toBe(0);
+  });
+
+  it('onModuleDestroy survives a rejected .close() on one queue and still drains the rest', async () => {
+    const client = new BullMqClient();
+    const qPost = client.getQueue('post');
+    const qCron = client.getQueue('cron');
+    (qPost.close as jest.Mock).mockRejectedValueOnce(new Error('forced close fail'));
+
+    await expect(client.onModuleDestroy()).resolves.toBeUndefined();
+
+    expect(qPost.close).toHaveBeenCalledTimes(1);
+    expect(qCron.close).toHaveBeenCalledTimes(1);
+    expect(client.queues.size).toBe(0);
   });
 });

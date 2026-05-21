@@ -3,6 +3,13 @@ import { EventPattern, Transport } from '@nestjs/microservices';
 import { PostsService } from '@gitroom/nestjs-libraries/database/prisma/posts/posts.service';
 import { WebhooksService } from '@gitroom/nestjs-libraries/database/prisma/webhooks/webhooks.service';
 import { AutopostService } from '@gitroom/nestjs-libraries/database/prisma/autopost/autopost.service';
+import {
+  POST_QUEUE_PATTERN,
+  SUBMIT_QUEUE_PATTERN,
+  SEND_DIGEST_EMAIL_QUEUE_PATTERN,
+  WEBHOOKS_QUEUE_PATTERN,
+  CRON_QUEUE_PATTERN,
+} from '@gitroom/nestjs-libraries/bull-mq-transport-new/queues.constants';
 
 @Controller()
 export class PostsController {
@@ -12,7 +19,7 @@ export class PostsController {
     private _autopostsService: AutopostService
   ) {}
 
-  @EventPattern('post', Transport.REDIS)
+  @EventPattern(POST_QUEUE_PATTERN, Transport.REDIS)
   async post(data: { id: string }) {
     console.log('processing', data);
     try {
@@ -22,7 +29,7 @@ export class PostsController {
     }
   }
 
-  @EventPattern('submit', Transport.REDIS)
+  @EventPattern(SUBMIT_QUEUE_PATTERN, Transport.REDIS)
   async payout(data: { id: string; releaseURL: string }) {
     try {
       return await this._postsService.payout(data.id, data.releaseURL);
@@ -34,7 +41,7 @@ export class PostsController {
     }
   }
 
-  @EventPattern('sendDigestEmail', Transport.REDIS)
+  @EventPattern(SEND_DIGEST_EMAIL_QUEUE_PATTERN, Transport.REDIS)
   async sendDigestEmail(data: { subject: string; org: string; since: string }) {
     try {
       return await this._postsService.sendDigestEmail(
@@ -50,7 +57,7 @@ export class PostsController {
     }
   }
 
-  @EventPattern('webhooks', Transport.REDIS)
+  @EventPattern(WEBHOOKS_QUEUE_PATTERN, Transport.REDIS)
   async webhooks(data: { org: string; since: string }) {
     try {
       return await this._webhooksService.fireWebhooks(data.org, data.since);
@@ -62,7 +69,7 @@ export class PostsController {
     }
   }
 
-  @EventPattern('cron', Transport.REDIS)
+  @EventPattern(CRON_QUEUE_PATTERN, Transport.REDIS)
   async cron(data: { id: string }) {
     try {
       return await this._autopostsService.startAutopost(data.id);

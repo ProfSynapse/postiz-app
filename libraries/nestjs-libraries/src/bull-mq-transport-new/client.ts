@@ -2,10 +2,11 @@ import { ClientProxy, ReadPacket, WritePacket } from '@nestjs/microservices';
 import { Queue, QueueEvents } from 'bullmq';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 import { v4 } from 'uuid';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 
 @Injectable()
-export class BullMqClient extends ClientProxy {
+export class BullMqClient extends ClientProxy implements OnModuleDestroy {
+  private readonly logger = new Logger(BullMqClient.name);
   queues = new Map<string, Queue>();
   queueEvents = new Map<string, QueueEvents>();
 
@@ -13,8 +14,33 @@ export class BullMqClient extends ClientProxy {
     return;
   }
 
+  // NestJS ClientProxy.close() is invoked on graceful shutdown. Delegate to
+  // onModuleDestroy so both code paths drain the cached Queue/QueueEvents
+  // ioredis connections. Pre-hardening this was a no-op AND the Maps were
+  // never populated; both issues are fixed together (cache populated by
+  // getQueue/getQueueEvents, drained here on shutdown).
   async close() {
-    return;
+    await this.onModuleDestroy();
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    const results = await Promise.allSettled([
+      ...Array.from(this.queues.values()).map((q) => q.close()),
+      ...Array.from(this.queueEvents.values()).map((qe) => qe.close()),
+    ]);
+    for (const r of results) {
+      if (r.status === 'rejected') {
+        // Best-effort drain — log and continue so a single bad close doesn't
+        // strand the others. Process is exiting either way.
+        this.logger.warn(
+          `BullMqClient shutdown drain rejected: ${
+            (r.reason as Error)?.message ?? r.reason
+          }`
+        );
+      }
+    }
+    this.queues.clear();
+    this.queueEvents.clear();
   }
 
   publish(
