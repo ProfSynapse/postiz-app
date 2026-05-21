@@ -1,0 +1,165 @@
+# .github/workflows/media-janitor-tests.yml
+#
+# Dedicated test workflow for the media-asset janitor (plan I.4).
+#
+# Why a separate workflow file (additive-only, per user constraint d027d165):
+#   - The existing .github/workflows/*.yml files are not modified.
+#   - The janitor integration suite needs a postgres:15 service container,
+#     prisma db push, and TEST_DATABASE_URL plumbing. Forking these into the
+#     existing build.yml would touch shared CI infra.
+#   - Failures here gate merge of the janitor branch but do NOT affect the
+#     rest of the build matrix.
+#
+# Triggers on pushes / PRs that touch any janitor-adjacent path.
+
+name: Media Janitor Tests
+
+on:
+  push:
+    paths:
+      - 'apps/cron/**'
+      - 'libraries/nestjs-libraries/src/database/prisma/media/**'
+      - 'libraries/nestjs-libraries/src/database/prisma/posts/**'
+      - 'libraries/nestjs-libraries/src/database/prisma/schema.prisma'
+      - 'libraries/nestjs-libraries/src/upload/**'
+      - 'libraries/nestjs-libraries/src/services/clock.service.ts'
+      - '.github/workflows/media-janitor-tests.yml'
+  pull_request:
+    paths:
+      - 'apps/cron/**'
+      - 'libraries/nestjs-libraries/src/database/prisma/media/**'
+      - 'libraries/nestjs-libraries/src/database/prisma/posts/**'
+      - 'libraries/nestjs-libraries/src/database/prisma/schema.prisma'
+      - 'libraries/nestjs-libraries/src/upload/**'
+      - 'libraries/nestjs-libraries/src/services/clock.service.ts'
+      - '.github/workflows/media-janitor-tests.yml'
+
+jobs:
+  unit:
+    name: Media-janitor unit tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['20.17.0']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
+          run_install: false
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Generate Prisma client
+        run: pnpm prisma generate --schema=libraries/nestjs-libraries/src/database/prisma/schema.prisma
+
+      # Unit suite: the janitor-related specs across both projects. The
+      # --selectProjects flag pins us to the apps/cron + nestjs-libraries
+      # jest projects; everything else is skipped to keep this workflow
+      # blast-radius minimal.
+      - name: Run unit tests
+        run: |
+          npx jest \
+            --selectProjects nestjs-libraries cron \
+            --testPathPattern 'media\.janitor|path\.confinement|media\.path\.resolver|clock\.service|clock\.restriction|post\.image\.parser|posts\.service\.update-media' \
+            --reporters=default \
+            --reporters=jest-junit
+        env:
+          # Unit suite never needs a DB; describeIfDb auto-skips integration
+          # specs that lack TEST_DATABASE_URL.
+          TEST_DATABASE_URL: ''
+
+  integration:
+    name: Media-janitor integration tests (real Postgres)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['20.17.0']
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postiz
+          POSTGRES_PASSWORD: postiz
+          POSTGRES_DB: postiz_janitor_test
+        ports:
+          - 5432:5432
+        # tcp health-check so the test runner waits until postgres accepts
+        # connections before invoking prisma db push.
+        options: >-
+          --health-cmd "pg_isready -U postiz"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      TEST_DATABASE_URL: postgresql://postiz:postiz@localhost:5432/postiz_janitor_test
+      DATABASE_URL: postgresql://postiz:postiz@localhost:5432/postiz_janitor_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
+          run_install: false
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Generate Prisma client
+        run: pnpm prisma generate --schema=libraries/nestjs-libraries/src/database/prisma/schema.prisma
+
+      - name: Apply schema to test database
+        run: pnpm prisma db push --schema=libraries/nestjs-libraries/src/database/prisma/schema.prisma --accept-data-loss --skip-generate
+
+      - name: Run integration suite
+        run: |
+          npx jest \
+            --selectProjects media-janitor-integration \
+            --reporters=default \
+            --reporters=jest-junit \
+            --runInBand
