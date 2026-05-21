@@ -57,6 +57,24 @@ interface HardDeleteLockRow {
 const toNumber = (v: number | bigint): number =>
   typeof v === 'bigint' ? Number(v) : v;
 
+// Detect Postgres SQLSTATE 40001 ("could not serialize access due to
+// concurrent update") wrapped by Prisma. Used by Path B race-loss
+// classification in processHardDeleteRow's catch block — see the
+// inline comment there for the full mechanism.
+//
+// Prisma wraps raw-SQL failures as PrismaClientKnownRequestError with
+// code P2010; the underlying SQLSTATE surfaces on err.meta.code
+// (Prisma 4+). Defensive fallback: match the substring "40001" in the
+// error message (Prisma's raw-query wrap formats as
+// "Raw query failed. Code: 40001. Message: ..."). The substring check
+// guards against meta-shape drift across Prisma versions.
+const isSerializationFailure = (err: unknown): boolean => {
+  if (!(err instanceof Prisma.PrismaClientKnownRequestError)) return false;
+  if (err.code !== 'P2010') return false;
+  const metaCode = (err.meta as { code?: unknown } | undefined)?.code;
+  return metaCode === '40001' || err.message.includes('40001');
+};
+
 @Injectable()
 export class MediaJanitorRepository {
   private readonly logger = new Logger(MediaJanitorRepository.name);
@@ -290,6 +308,31 @@ export class MediaJanitorRepository {
     } catch (err) {
       if (err instanceof DryRunRollback) {
         return err.outcome;
+      }
+      // Path B race-loss detection: under REPEATABLE READ + FOR UPDATE
+      // (set at the $transaction call above), Postgres does NOT fire
+      // EvalPlanQual when a concurrent tx has DELETEd+COMMITted the
+      // locked row — the loser aborts with SQLSTATE 40001 ("could not
+      // serialize access due to concurrent update"). Prisma surfaces
+      // this as PrismaClientKnownRequestError code P2010 (raw query
+      // failure) with the SQLSTATE on err.meta.code. The in-txn
+      // predicate re-check at the `locked.length === 0` branch is
+      // structurally unreachable for the contended-single-row case
+      // under RR; the 'skipped-race' outcome therefore flows HERE.
+      // The branch above remains reachable for the non-contended
+      // row-vanish case (row gone between candidate query and the
+      // FOR UPDATE inside the txn, no concurrent lock fight).
+      if (isSerializationFailure(err)) {
+        this.logger.warn(
+          `media-janitor.hard-delete.race-loss mediaId=${mediaId} sqlstate=40001`,
+        );
+        return {
+          mediaId,
+          path: '',
+          fileSize: 0,
+          organizationId: '',
+          result: 'skipped-race',
+        };
       }
       Sentry.captureException(err, {
         extra: { mediaId, method: 'hardDeleteBatch.perRow' },

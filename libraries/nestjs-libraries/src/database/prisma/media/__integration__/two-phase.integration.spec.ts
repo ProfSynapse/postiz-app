@@ -441,14 +441,23 @@ describeIfDb('MediaJanitorRepository two-phase state machine (integration)', (pr
       const results = all.map((o) => o.result).sort();
 
       // Exactly one tick wins the FOR UPDATE and performs the DELETE; the
-      // other re-evaluates the predicate via EvalPlanQual on the now-
-      // deleted tuple, finds 0 rows matching, and routes through the
-      // skipped-race no-op branch (repository.ts:205-213).
+      // other loses the lock race. Mechanism under REPEATABLE READ + FOR
+      // UPDATE (set at repository.ts processHardDeleteRow's $transaction
+      // call): Postgres does NOT fire EvalPlanQual under RR — the loser's
+      // txn aborts with SQLSTATE 40001 ("could not serialize access due
+      // to concurrent update"). The catch block in processHardDeleteRow
+      // classifies 40001 specifically (via isSerializationFailure) and
+      // emits a skipped-race outcome, routing the loser through the
+      // error-handler path rather than the in-txn predicate re-check
+      // (which is structurally unreachable under RR for the contended
+      // single-row case).
       expect(results).toEqual(['deleted', 'skipped-race']);
 
       // Post-condition: the row is gone exactly once. The LOSER must never
-      // reach the DELETE statement — contract pinned by the predicate
-      // re-check at repository.ts:199-202.
+      // reach the DELETE statement — contract pinned by the FOR UPDATE
+      // + RepeatableRead serialization-abort path (loser's tx never
+      // executes the DELETE statement because it aborts with 40001
+      // before reaching it).
       const gone = await prisma.media.findUnique({ where: { id: mediaId } });
       expect(gone).toBeNull();
     });
