@@ -60,21 +60,29 @@ export class BullMqClient extends ClientProxy {
   }
 
   getQueueEvents(pattern: string) {
-    return (
-      this.queueEvents.get(pattern) ||
-      new QueueEvents(pattern, {
+    // Cache-or-create. Previously this used `Map.get() || new QueueEvents(...)`
+    // which short-circuited to a fresh QueueEvents on every miss but never
+    // .set() back into the Map — leaking an ioredis connection per call.
+    let queueEvents = this.queueEvents.get(pattern);
+    if (!queueEvents) {
+      queueEvents = new QueueEvents(pattern, {
         connection: ioRedis,
-      })
-    );
+      });
+      this.queueEvents.set(pattern, queueEvents);
+    }
+    return queueEvents;
   }
 
   getQueue(pattern: string) {
-    return (
-      this.queues.get(pattern) ||
-      new Queue(pattern, {
+    // Cache-or-create. See getQueueEvents above — same leak shape.
+    let queue = this.queues.get(pattern);
+    if (!queue) {
+      queue = new Queue(pattern, {
         connection: ioRedis,
-      })
-    );
+      });
+      this.queues.set(pattern, queue);
+    }
+    return queue;
   }
 
   async checkForStuckWaitingJobs(queueName: string) {
