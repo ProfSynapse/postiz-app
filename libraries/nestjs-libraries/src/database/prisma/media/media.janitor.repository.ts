@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import * as Sentry from '@sentry/nestjs';
 import { PrismaService } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 
 export type TxClient = Prisma.TransactionClient;
@@ -290,6 +291,9 @@ export class MediaJanitorRepository {
       if (err instanceof DryRunRollback) {
         return err.outcome;
       }
+      Sentry.captureException(err, {
+        extra: { mediaId, method: 'hardDeleteBatch.perRow' },
+      });
       this.logger.warn(
         `media-janitor.hard-delete.tx-error mediaId=${mediaId} err=${
           (err as Error).message
