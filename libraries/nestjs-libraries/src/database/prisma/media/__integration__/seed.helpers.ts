@@ -77,6 +77,7 @@ export interface PostSeed {
   organizationId: string;
   content: string;
   integrationId: string;
+  group: string;
 }
 
 export function postFactory(
@@ -99,6 +100,7 @@ export function postFactory(
     organizationId: overrides.organizationId ?? 'org-test',
     content: overrides.content ?? 'post content',
     integrationId: overrides.integrationId ?? 'integration-test',
+    group: overrides.group ?? randomUUID(),
   };
 }
 
