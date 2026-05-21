@@ -188,6 +188,12 @@ export class PostsService {
             })
           )
         )
+          // R5 null-guard: `getMediaById` returns null when the Media row was
+          // hard-deleted by the media-janitor (or otherwise removed). The
+          // downstream `.map(m => m.path...)` would throw on a null spread.
+          // Drop missing rows; the resulting post will simply have fewer
+          // images, which is the correct behavior for a deleted asset.
+          .filter((m): m is NonNullable<typeof m> => m != null && !!m.path)
           .map((m) => {
             return {
               ...m,

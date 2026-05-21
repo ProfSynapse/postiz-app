@@ -1,0 +1,369 @@
+// libraries/nestjs-libraries/src/upload/path.confinement.spec.ts
+//
+// Unit coverage for the authoritative path-guard (architect §5, plan §Path-
+// confinement contract, SD1-SD4, invariants #1/#7/#8).
+//
+// confineAndVerify is the Media.path entrypoint (8-step algorithm).
+// verifyAbsolutePath is the LocalStorage layer-2 gate (steps 4-7 only).
+//
+// Tests use a real tmpfs scratch root so realpath / lstat exercise the actual
+// filesystem semantics the production code relies on. Adversarial fixtures
+// cover the security-engineer's SD2 surface (traversal, symlink escape via
+// intermediate dirs, leaf symlink, control chars, non-regular file, malformed
+// percent-encoding, unsupported schemes).
+//
+// Counter-test-by-revert mandated by plan §Test Engineer on path-guard:
+// each of the 7 reject reasons is paired with an inverse positive case that
+// would flip RED if confineAndVerify drifted away from the contract.
+import { promises as fsp } from 'fs';
+import { mkdtemp, mkdir, symlink, writeFile } from 'fs/promises';
+import { tmpdir } from 'os';
+import path from 'path';
+import {
+  confineAndVerify,
+  verifyAbsolutePath,
+  ConfinementReason,
+} from './path.confinement';
+
+// Control-char fixtures as String.fromCharCode references so the source file
+// stays UTF-8 — inline raw NUL / DEL bytes flip git into binary-file mode and
+// the spec becomes invisible in PR review UIs (Task #22 finding B1).
+const NUL = String.fromCharCode(0);
+const DEL = String.fromCharCode(0x7f);
+
+describe('confineAndVerify (Media.path entrypoint)', () => {
+  let root: string; // tmpfs upload root, realpath-resolved
+  let rootRaw: string; // un-realpathed (may differ on macOS /var vs /private/var)
+  const originalFrontendUrl = process.env.FRONTEND_URL;
+
+  const FRONTEND = 'https://app.example.test';
+
+  beforeAll(async () => {
+    rootRaw = await mkdtemp(path.join(tmpdir(), 'mj-confine-'));
+    root = await fsp.realpath(rootRaw);
+
+    // Seed a populated YYYY/MM/DD tree with a regular file and a leaf symlink
+    // pointing OUTSIDE the root (the canonical SD2 attack).
+    await mkdir(path.join(root, '2025', '01', '02'), { recursive: true });
+    await writeFile(path.join(root, '2025', '01', '02', 'real.png'), 'PNG');
+
+    // Outside-root file (target of escape symlink and intermediate-symlink test)
+    const outsideRoot = await fsp.realpath(
+      await mkdtemp(path.join(tmpdir(), 'mj-confine-outside-'))
+    );
+    await writeFile(path.join(outsideRoot, 'secret.txt'), 'SECRET');
+
+    await symlink(
+      path.join(outsideRoot, 'secret.txt'),
+      path.join(root, '2025', '01', '02', 'escape.png')
+    );
+
+    // Intermediate-symlink: dir-level symlink that escapes the root.
+    await symlink(
+      outsideRoot,
+      path.join(root, '2025', '01', '02', 'escape-dir')
+    );
+
+    // Non-regular file: a directory at a leaf the resolver would consider
+    // a Media path.
+    await mkdir(path.join(root, '2025', '01', '03'), { recursive: true });
+    await mkdir(path.join(root, '2025', '01', '03', 'isdir.png'));
+
+    process.env.FRONTEND_URL = FRONTEND;
+  });
+
+  afterAll(async () => {
+    if (originalFrontendUrl === undefined) {
+      delete process.env.FRONTEND_URL;
+    } else {
+      process.env.FRONTEND_URL = originalFrontendUrl;
+    }
+    // Best-effort cleanup; tmpdir cleanup by the OS suffices on test failure.
+    await fsp.rm(rootRaw, { recursive: true, force: true }).catch(() => {});
+  });
+
+  describe('positive cases (counter-test-by-revert anchors)', () => {
+    it('accepts modern URL shape ${FRONTEND_URL}/uploads/YYYY/MM/DD/file', async () => {
+      const input = `${FRONTEND}/uploads/2025/01/02/real.png`;
+      const result = await confineAndVerify(input, root);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.absolutePath).toBe(
+          path.join(root, '2025', '01', '02', 'real.png')
+        );
+      }
+    });
+
+    it('accepts legacy relative shape /YYYY/MM/DD/file', async () => {
+      const input = '/2025/01/02/real.png';
+      const result = await confineAndVerify(input, root);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.absolutePath).toBe(
+          path.join(root, '2025', '01', '02', 'real.png')
+        );
+      }
+    });
+
+    it('decodes percent-encoded filenames', async () => {
+      const encodedName = 'with%20space.png';
+      await writeFile(
+        path.join(root, '2025', '01', '02', 'with space.png'),
+        'PNG'
+      );
+      const result = await confineAndVerify(
+        `/2025/01/02/${encodedName}`,
+        root
+      );
+      expect(result.ok).toBe(true);
+    });
+  });
+
+  describe('adversarial / SD2 rejects (each paired with a positive baseline)', () => {
+    const expectReject = async (
+      input: string,
+      reason: ConfinementReason
+    ): Promise<void> => {
+      const result = await confineAndVerify(input, root);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe(reason);
+      }
+    };
+
+    it('rejects ../ traversal in legacy shape', async () => {
+      // Note: leading /YYYY/MM/DD/ shape passes step-2 classification, but
+      // path.resolve flattens `..` and step-4 catches the escape.
+      await expectReject(
+        '/2025/01/02/../../../etc/passwd',
+        'traversal'
+      );
+    });
+
+    it('rejects ../ traversal in modern URL shape', async () => {
+      await expectReject(
+        `${FRONTEND}/uploads/2025/01/02/../../../etc/passwd`,
+        'traversal'
+      );
+    });
+
+    it('rejects absolute path injected via percent-encoding', async () => {
+      // %2F is forward slash — decodeURIComponent yields literal slash that
+      // path.resolve treats as a new absolute anchor.
+      await expectReject(
+        `/2025/01/02/%2Fetc%2Fpasswd`,
+        'traversal'
+      );
+    });
+
+    it('rejects malformed percent-encoding (decodeURIComponent throws)', async () => {
+      await expectReject('/2025/01/02/%E0%A4%A.png', 'traversal');
+    });
+
+    it('rejects leaf symlink (lstat-isFile catches it after realpath re-confine)', async () => {
+      // escape.png is a symlink in-root whose target is OUTSIDE root.
+      // realpath resolves the symlink target; step 6 catches the escape.
+      await expectReject(
+        '/2025/01/02/escape.png',
+        'symlink'
+      );
+    });
+
+    it('rejects intermediate symlink that escapes root', async () => {
+      // escape-dir is a directory symlink pointing outside root; any file
+      // accessed through it has a realpath outside root.
+      await writeFile(
+        path.join(
+          await fsp.realpath(path.join(root, '2025', '01', '02', 'escape-dir')),
+          'inner.png'
+        ),
+        'PNG'
+      );
+      await expectReject(
+        '/2025/01/02/escape-dir/inner.png',
+        'symlink'
+      );
+    });
+
+    it('rejects non-regular file (directory at leaf)', async () => {
+      await expectReject(
+        '/2025/01/03/isdir.png',
+        'non_regular_file'
+      );
+    });
+
+    it('rejects realpath failure (file does not exist)', async () => {
+      await expectReject(
+        '/2025/01/02/does-not-exist.png',
+        'realpath_failed'
+      );
+    });
+
+    it('rejects control chars (NUL byte)', async () => {
+      await expectReject(
+        `/2025/01/02/evil${NUL}.png`,
+        'control_char'
+      );
+    });
+
+    it('rejects control chars (CR / LF injection)', async () => {
+      await expectReject(
+        '/2025/01/02/inj\necti\rion.png',
+        'control_char'
+      );
+    });
+
+    it('rejects control chars (DEL 0x7f)', async () => {
+      await expectReject(
+        `/2025/01/02/del${DEL}.png`,
+        'control_char'
+      );
+    });
+
+    it('rejects unsupported scheme (https:// not matching FRONTEND_URL)', async () => {
+      await expectReject(
+        'https://attacker.example.test/uploads/2025/01/02/evil.png',
+        'unsupported_scheme'
+      );
+    });
+
+    it('rejects unsupported scheme (http://)', async () => {
+      await expectReject(
+        'http://attacker.example.test/uploads/2025/01/02/evil.png',
+        'unsupported_scheme'
+      );
+    });
+
+    it('rejects unknown shape (no leading /YYYY/, not a URL)', async () => {
+      await expectReject('random-string', 'unsupported_scheme');
+    });
+
+    it('rejects empty-string input', async () => {
+      await expectReject('', 'unsupported_scheme');
+    });
+
+    it('rejects non-string input via the typeof guard', async () => {
+      // The function is typed `(string, string)` but the typeof guard exists
+      // for defense-in-depth against `any`-shaped DB rows.
+      const result = await confineAndVerify(
+        null as unknown as string,
+        root
+      );
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe('control_char');
+      }
+    });
+  });
+
+  describe('classification ordering (invariant #8)', () => {
+    it('http(s) that does NOT match FRONTEND_URL is unsupported_scheme, NOT remote', async () => {
+      // The resolver layer classifies remote; the path-guard rejects http(s)
+      // entirely. This is the boundary between resolver kind=remote and
+      // path-guard reject — keeping them aligned is invariant #8.
+      const result = await confineAndVerify(
+        'https://cdn.cloudflare.com/img.png',
+        root
+      );
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toBe('unsupported_scheme');
+    });
+
+    it('modern URL takes precedence over legacy when FRONTEND_URL is set', async () => {
+      // Both shapes match for `${FRONTEND}/uploads/2025/01/02/real.png`:
+      // it starts with the modern prefix and also contains the YYYY-MM-DD
+      // segment further in. Modern is tried first and wins.
+      const result = await confineAndVerify(
+        `${FRONTEND}/uploads/2025/01/02/real.png`,
+        root
+      );
+      expect(result.ok).toBe(true);
+    });
+
+    it('legacy /YYYY/MM/DD/ is matched when FRONTEND_URL is unset', async () => {
+      const saved = process.env.FRONTEND_URL;
+      delete process.env.FRONTEND_URL;
+      try {
+        const result = await confineAndVerify(
+          '/2025/01/02/real.png',
+          root
+        );
+        expect(result.ok).toBe(true);
+      } finally {
+        process.env.FRONTEND_URL = saved;
+      }
+    });
+  });
+});
+
+describe('verifyAbsolutePath (LocalStorage layer-2 gate)', () => {
+  let root: string;
+  let rootRaw: string;
+
+  beforeAll(async () => {
+    rootRaw = await mkdtemp(path.join(tmpdir(), 'mj-verify-'));
+    root = await fsp.realpath(rootRaw);
+    await mkdir(path.join(root, 'a'), { recursive: true });
+    await writeFile(path.join(root, 'a', 'good.png'), 'PNG');
+
+    const outside = await fsp.realpath(
+      await mkdtemp(path.join(tmpdir(), 'mj-verify-outside-'))
+    );
+    await writeFile(path.join(outside, 'secret.txt'), 'SECRET');
+    await symlink(
+      path.join(outside, 'secret.txt'),
+      path.join(root, 'a', 'link.png')
+    );
+  });
+
+  afterAll(async () => {
+    await fsp.rm(rootRaw, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it('accepts an absolute path inside root pointing at a regular file', async () => {
+    const result = await verifyAbsolutePath(
+      path.join(root, 'a', 'good.png'),
+      root
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects a relative path (input must be absolute)', async () => {
+    const result = await verifyAbsolutePath('a/good.png', root);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe('traversal');
+  });
+
+  it('rejects an absolute path OUTSIDE root', async () => {
+    const result = await verifyAbsolutePath('/etc/passwd', root);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe('traversal');
+  });
+
+  it('rejects a leaf symlink whose target is outside root', async () => {
+    const result = await verifyAbsolutePath(
+      path.join(root, 'a', 'link.png'),
+      root
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe('symlink');
+  });
+
+  it('rejects control chars in the absolute path string', async () => {
+    const result = await verifyAbsolutePath(
+      path.join(root, 'a', `good${NUL}.png`),
+      root
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe('control_char');
+  });
+
+  it('rejects when the file does not exist (realpath_failed)', async () => {
+    const result = await verifyAbsolutePath(
+      path.join(root, 'a', 'missing.png'),
+      root
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe('realpath_failed');
+  });
+});

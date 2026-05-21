@@ -1,9 +1,11 @@
 import { IUploadProvider } from './upload.interface';
-import { mkdirSync, unlink, writeFileSync } from 'fs';
+import { mkdirSync, promises as fsp, writeFileSync } from 'fs';
 // @ts-ignore
 import mime from 'mime';
 import { extname } from 'path';
 import axios from 'axios';
+import { verifyAbsolutePath } from './path.confinement';
+import { PathConfinementError } from './path.confinement.error';
 
 export class LocalStorage implements IUploadProvider {
   constructor(private uploadDirectory: string) {}
@@ -73,16 +75,26 @@ export class LocalStorage implements IUploadProvider {
     }
   }
 
+  /**
+   * Defense-in-depth gate (SD1) for all filesystem deletions.
+   *
+   * Re-asserts path confinement against the configured `uploadDirectory`
+   * even when callers (such as the media-janitor) have already pre-flighted
+   * via MediaPathResolver. This ensures that ANY future caller of
+   * `removeFile` - including paths that bypass the resolver - is protected.
+   *
+   * Throws `PathConfinementError` with a typed `reason` on rejection. ENOENT
+   * from the actual unlink propagates as-is so callers can treat it as
+   * idempotent success.
+   *
+   * See: docs/architecture/media-janitor.md §5
+   *      docs/plans/media-janitor-plan.md §Path-confinement contract Layer 2
+   */
   async removeFile(filePath: string): Promise<void> {
-    // Logic to remove the file from the filesystem goes here
-    return new Promise((resolve, reject) => {
-      unlink(filePath, (err) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve();
-        }
-      });
-    });
+    const result = await verifyAbsolutePath(filePath, this.uploadDirectory);
+    if (!result.ok) {
+      throw new PathConfinementError(result.reason, filePath);
+    }
+    await fsp.unlink(result.absolutePath);
   }
 }

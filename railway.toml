@@ -1,3 +1,20 @@
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile.dev"
+
+# === Volume Mount Note
+#
+# The local-uploads volume mount is configured Railway-dashboard-side
+# (Service -> Settings -> Volumes), NOT in this file. Railway volume
+# mounts are not declared via railway.toml.
+#
+# Operator contract: the volume's mount path MUST exactly equal the
+# value of UPLOAD_DIRECTORY set on the service. The media-asset janitor
+# (apps/cron/src/tasks/media.janitor.ts) refuses to start when
+# UPLOAD_DIRECTORY is unset or non-absolute, and the path-confinement
+# guard uses UPLOAD_DIRECTORY as the authoritative root for every
+# unlink. A mismatch silently turns the janitor into a no-op (all
+# candidate files would fail path confinement) and leaves disk
+# reclamation broken.
+#
+# See docs/runbooks/media-janitor.md section 2 for the rollout checklist.

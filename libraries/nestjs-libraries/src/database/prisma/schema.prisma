@@ -217,6 +217,7 @@ model Media {
   @@index([name])
   @@index([organizationId])
   @@index([type])
+  @@index([deletedAt])
 }
 
 model SocialMediaAgency {
@@ -429,6 +430,7 @@ model Post {
   @@index([updatedAt])
   @@index([releaseURL])
   @@index([integrationId])
+  @@index([state, publishDate, deletedAt])
 }
 
 model Notifications {
