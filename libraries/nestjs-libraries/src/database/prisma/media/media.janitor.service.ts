@@ -271,6 +271,13 @@ export class MediaJanitorService {
         }
         await this.attemptUnlink(outcome, opts, summary);
         return;
+
+      default: {
+        const _exhaustive: never = outcome;
+        throw new Error(
+          `Unknown HardDeleteRowResult variant: ${JSON.stringify(_exhaustive)}`
+        );
+      }
     }
   }
 

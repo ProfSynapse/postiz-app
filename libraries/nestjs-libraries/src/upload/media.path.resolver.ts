@@ -25,8 +25,8 @@
  * Used by:
  *   - libraries/nestjs-libraries/src/database/prisma/media/media.janitor.service.ts
  *
- * Registered globally via UploadModule (which is @Global), NOT in
- * CronModule. Architect doc §2.
+ * Registered as a provider in CronModule (apps/cron/src/cron.module.ts).
+ * Future refactor to UploadModule (@Global) is tracked as F-resolver-placement.
  *
  * See: docs/architecture/media-janitor.md §5 Resolver + Path-Guard Contract
  *      docs/plans/media-janitor-plan.md §Three in-the-wild Media.path shapes
