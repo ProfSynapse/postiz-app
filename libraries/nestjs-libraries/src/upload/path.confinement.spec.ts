@@ -46,6 +46,13 @@ describe('confineAndVerify (Media.path entrypoint)', () => {
     // pointing OUTSIDE the root (the canonical SD2 attack).
     await mkdir(path.join(root, '2025', '01', '02'), { recursive: true });
     await writeFile(path.join(root, '2025', '01', '02', 'real.png'), 'PNG');
+    // Seed for MINOR-3 positive baseline: substring `..` in filename must
+    // NOT trip rule (a). Rule (a) splits on `/\` and rejects segments
+    // strictly equal to `..` — a filename merely CONTAINING `..` is legal.
+    await writeFile(
+      path.join(root, '2025', '01', '02', 'my..file.png'),
+      'PNG'
+    );
 
     // Outside-root file (target of escape symlink and intermediate-symlink test)
     const outsideRoot = await fsp.realpath(
@@ -116,6 +123,22 @@ describe('confineAndVerify (Media.path entrypoint)', () => {
         root
       );
       expect(result.ok).toBe(true);
+    });
+
+    // MINOR-3: positive-baseline pin for rule (a). The filename `my..file.png`
+    // CONTAINS the substring `..` but no path SEGMENT === `..` (segments are
+    // split on `/\`). Rule (a) must permit this. Counter-test-by-revert: if
+    // rule (a) were rewritten to use `.includes('..')` instead of
+    // `.includes(..)` on segments, this test would flip RED with `traversal`.
+    it('accepts filename containing `..` substring (rule a segment-equality, not substring)', async () => {
+      const input = `${FRONTEND}/uploads/2025/01/02/my..file.png`;
+      const result = await confineAndVerify(input, root);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.absolutePath).toBe(
+          path.join(root, '2025', '01', '02', 'my..file.png')
+        );
+      }
     });
   });
 
@@ -253,6 +276,149 @@ describe('confineAndVerify (Media.path entrypoint)', () => {
       if (!result.ok) {
         expect(result.reason).toBe('control_char');
       }
+    });
+
+    // ─── Step-2.5 sub-rule coverage (MINOR-1, MINOR-2, MINOR-3, FUTURE-1..5,
+    //     plus security-engineer's %5C and double-encoded %252E%252E pins).
+    //
+    // Each test below names the Step-2.5 sub-rule it pins. Counter-test-by-
+    // revert: removing the targeted sub-rule would flip the test to either
+    // `realpath_failed` (the wrong typed reason) or — in the worst case — to
+    // `ok: true` for an attacker-controlled path that path.resolve happens to
+    // anchor inside root. The whole point of Step 2.5 is to fail SHARPLY on
+    // SYNTAX before path.resolve destroys the evidence.
+
+    // MINOR-1 (rule c, backslash): three discriminators for the
+    // backslash-as-segment-separator rule. POSIX path.resolve treats `\` as a
+    // literal character, so without rule (c) these would survive flattening
+    // and either pass step-4 isInsideRoot or fail at step-5 with the wrong
+    // reason. Rule (c) must reject pre-resolve regardless of where the `\`
+    // appears in the path.
+    it('rejects backslash-separator traversal (rule c, MINOR-1)', async () => {
+      // Modern URL shape with backslash-separator `..` traversal.
+      await expectReject(
+        `${FRONTEND}/uploads/2025/01/02/..\\..\\..\\etc\\passwd`,
+        'traversal'
+      );
+    });
+
+    it('rejects mixed-separator path with backslash (rule c, MINOR-1)', async () => {
+      // Legacy shape, backslash appears mid-path without `..`. Rule (c)
+      // rejects any backslash — not just traversal-shaped — to defend against
+      // POSIX path.resolve treating it as a literal segment character.
+      await expectReject('/2025/01/02/foo\\bar', 'traversal');
+    });
+
+    it('rejects filename containing backslash (rule c, MINOR-1)', async () => {
+      // Backslash anywhere — even in the leaf — rejects. No legitimate Postiz
+      // upload writes a backslash to disk.
+      await expectReject('/2025/01/02/file\\name.png', 'traversal');
+    });
+
+    // MINOR-2 (rule b, leading-`/` after decode): regression pin for the
+    // leading-/ attack family. Defense-in-depth: this leading-/ input is
+    // caught by rule (b) AND rule (d) (the post-decode leading slash
+    // produces both a startsWith('/') match and an empty first segment
+    // under the /[\\/]/ split). Removing EITHER rule alone does not flip
+    // this test RED — only removing BOTH does. We keep this test as a
+    // regression pin for the leading-/ attack family; the rule overlap is
+    // intentional (SD2 belt-and-suspenders), not redundant code.
+    it('rejects %2F-injection re-anchor in modern URL shape (rule b ∧ rule d, MINOR-2)', async () => {
+      await expectReject(
+        `${FRONTEND}/uploads/%2Fetc%2Fpasswd`,
+        'traversal'
+      );
+    });
+
+    // FUTURE-1: URL-encoded `..` (`%2E%2E`). decodeURIComponent is case-
+    // insensitive on hex digits, so `%2E%2E` and `%2e%2e` both decode to `..`.
+    // After single-decode, segments include `..` → rule (a) catches.
+    // Counter-test-by-revert: without rule (a), path.resolve would flatten
+    // the `..` segments and step-4 isInsideRoot may or may not catch depending
+    // on the leading-prefix depth. Rule (a) makes rejection sharp.
+    it('rejects URL-encoded `..` (`%2E%2E`) via rule a after decode (FUTURE-1)', async () => {
+      await expectReject(
+        '/2025/01/02/%2E%2E/%2E%2E/etc/passwd',
+        'traversal'
+      );
+    });
+
+    // FUTURE-2: trailing `..` segment with no following path. path.resolve
+    // would flatten to `<root>/2025/01/02` — INSIDE root, but pointing at a
+    // directory, which would then fail at step-7 lstat with `non_regular_file`
+    // (the wrong reason). Rule (a) catches the syntactic `..` segment first.
+    it('rejects trailing `..` segment (FUTURE-2, rule a)', async () => {
+      await expectReject('/2025/01/02/..', 'traversal');
+    });
+
+    // FUTURE-3: triple-slash via `%2F%2F`. Decodes to `//`, producing an
+    // empty segment in the split → rule (d) catches. Counter-test-by-revert:
+    // without rule (d), path.resolve silently collapses `//` and the request
+    // resolves inside root to `<root>/2025/01/02/file/name.png` — which
+    // doesn't exist, so step-5 returns `realpath_failed` (wrong reason).
+    // Worse, if the resolved file DID exist, the request would succeed.
+    it('rejects `%2F%2F` triple-slash producing empty segment (FUTURE-3, rule d)', async () => {
+      await expectReject(
+        '/2025/01/02/file%2F%2Fname.png',
+        'traversal'
+      );
+    });
+
+    // FUTURE-4: lowercase `%2f` (decodeURIComponent is case-insensitive on
+    // hex digits). Decodes to `/`, producing an empty segment after the
+    // legacy-branch leading-slash strip → rule (d) catches.
+    it('rejects lowercase `%2f` re-anchor (FUTURE-4, rule d, hex-case-insensitive)', async () => {
+      await expectReject(
+        '/2025/01/02/%2fetc%2fpasswd',
+        'traversal'
+      );
+    });
+
+    // FUTURE-5: `..` before `/uploads/` in modern URL shape. The modern
+    // branch slices off `${FRONTEND}/uploads/`, leaving suffix `../etc/passwd`.
+    // Without rule (a), path.resolve(uploadRoot, '../etc/passwd') yields
+    // `<parent-of-root>/etc/passwd` — OUTSIDE root, so step-4 catches but
+    // via isInsideRoot rather than syntactic rejection. Rule (a) makes the
+    // rejection happen pre-resolve at the syntactic layer.
+    it('rejects `..` in modern URL suffix (FUTURE-5, rule a)', async () => {
+      await expectReject(
+        `${FRONTEND}/uploads/../etc/passwd`,
+        'traversal'
+      );
+    });
+
+    // Security-engineer add (#49 HANDOFF): `%5C` decodes to literal `\`,
+    // which rule (c) rejects. Pins rule (c) against percent-encoded
+    // backslash injection — the natural evasion attempt against a code
+    // review that adds rule (c) for raw `\` but forgets the percent-encoded
+    // variant. decodeURIComponent runs BEFORE step 2.5, so the literal `\`
+    // surfaces in time for rule (c) to fire.
+    it('rejects %5C-encoded backslash injection (rule c, %-encoded variant)', async () => {
+      await expectReject(
+        '/2025/01/02/%5C..%5C..%5Cetc%5Cpasswd',
+        'traversal'
+      );
+    });
+
+    // Security-engineer add (#49 HANDOFF): double-encoded `%252E%252E`.
+    // NEGATIVE sharp test — this input must NOT be classified as `traversal`.
+    // decodeURIComponent runs ONCE, so the input decodes to `%2E%2E` (literal
+    // 6-char string `%2E%2E`, not `..`). No Step-2.5 rule matches:
+    //   - rule (a): segment `%2E%2E` is not strictly `..`
+    //   - rule (b): no leading `/`
+    //   - rule (c): no backslash
+    //   - rule (d): no empty segment
+    // path.resolve treats `%2E%2E` as a literal directory name. The directory
+    // does not exist, so step-5 realpath fails → `realpath_failed`. This
+    // test pins the boundary: Step 2.5 is a SYNTAX gate, not a recursive
+    // decoder. Defending against double-encoding is the realpath gate's job.
+    // Counter-test-by-revert: if a future change adds recursive decoding to
+    // confineAndVerify, this test would flip RED with `traversal`.
+    it('classifies double-encoded `%252E%252E` as realpath_failed (NOT traversal)', async () => {
+      await expectReject(
+        '/2025/01/02/%252E%252E/file.png',
+        'realpath_failed'
+      );
     });
   });
 

@@ -112,7 +112,16 @@ export class MediaPathResolver {
     }
 
     const result = await confineAndVerify(mediaPath, uploadRoot);
-    if (!result.ok) {
+    // Use explicit discriminant-equality (`=== false`) rather than the `!`
+    // unary-negation form so TypeScript narrows the union correctly even
+    // under tsconfig.base.json's `strictNullChecks: false`. With loose null
+    // checks, `!result.ok` is treated as a generic falsiness test that does
+    // not propagate the discriminant, so `result.reason` is unresolved on
+    // the resulting union (TS2339). The `=== false` form is unambiguously a
+    // discriminant check and narrows under both strict and loose modes.
+    // (Same fix pattern as local.storage.ts:96; shared root cause is the
+    // loose-narrowing-of-`!discriminant` family tracked under F8.)
+    if (result.ok === false) {
       this.logger.warn({
         evt: 'media-janitor.path-reject',
         runId: ctx.runId,

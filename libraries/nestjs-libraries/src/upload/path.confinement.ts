@@ -20,6 +20,11 @@
  *        b. `/^\/\d{4}\/\d{2}\/\d{2}\//` (legacy relative) -> use path as suffix
  *        c. `/^https?:\/\//` (not local prefix) -> `unsupported_scheme`
  *        d. Else -> `unsupported_scheme`
+ *   2.5. Reject syntactic traversal patterns pre-resolve: any segment ===
+ *        `..`, leading `/`, any backslash, any empty segment (catches %2F
+ *        injection signatures). All -> `traversal`. (SD2 defense-in-depth;
+ *        full rationale in the inline `Step 2.5` block within
+ *        `confineAndVerify` below.)
  *   3. `path.resolve(uploadRoot, decodedSuffix)` -> flattens `..` AND
  *      collapses legacy edge cases (`/year//month`, `/./month`).
  *   4. `path.relative(uploadRoot, target)` -> reject if it starts with `..`,
@@ -164,6 +169,52 @@ export async function confineAndVerify(
   try {
     decodedSuffix = decodeURIComponent(suffix);
   } catch {
+    return { ok: false, reason: 'traversal' };
+  }
+
+  // Step 2.5: pre-resolve syntactic traversal rejection (SD2 defense-in-depth).
+  //
+  // `path.resolve` SILENTLY flattens `..` segments and collapses repeated
+  // separators. That means inputs whose `..` segments happen to flatten to a
+  // path INSIDE uploadRoot (e.g. `2025/01/02/../../../etc/passwd` has the
+  // same depth of `..` as the legitimate `2025/01/02/` prefix, so it
+  // flattens to `<uploadRoot>/etc/passwd` — inside root) would pass the
+  // step-4 isInsideRoot gate and only fail at step-5 realpath with the wrong
+  // typed reason. Worse, if such a file ever existed inside uploadRoot the
+  // gate would accept it.
+  //
+  // SD2 rejects the SYNTAX, not just the OUTCOME: an attacker who can poison
+  // Media.path with `..`-laden, `%2F`-re-anchored, or backslash-laden values
+  // must not be able to delete `<uploadRoot>/etc/passwd` even if `path.resolve`
+  // would have silently anchored the input inside root. This block sits BEFORE
+  // path.resolve specifically because that is where the syntactic information
+  // is destroyed.
+  //
+  // (a) Any path segment === `..` (split on `/` and `\`). Catches the canonical
+  //     `2025/01/02/../../../etc/passwd` adversarial case AND mixed-separator
+  //     evasion that POSIX `path.resolve` won't normalize.
+  // (b) Decoded suffix begins with `/`. Legitimate inputs enter decode already
+  //     stripped of their leading slash (Step 2 modern and legacy branches both
+  //     strip), so a post-decode leading separator is by construction a `%2F`-
+  //     injection re-anchor attempt (path.resolve only re-anchors on a literal-
+  //     start `/`).
+  // (c) Any backslash anywhere. Legitimate uploads never contain `\`; on POSIX
+  //     deployments path.resolve treats `\` as a regular path-segment character,
+  //     which means traversal patterns can survive flattening.
+  // (d) Any EMPTY segment in the split result. Catches consecutive separators
+  //     (`//`, `/\`, `\/`) that legitimate `/YYYY/MM/DD/filename.ext` paths
+  //     never produce after Step-2 leading-slash strip. The interior `//` case
+  //     is the canonical signature of `%2F` percent-decode injection (e.g.
+  //     `2025/01/02/%2Fetc%2Fpasswd` decodes to `2025/01/02//etc/passwd`),
+  //     which path.resolve silently collapses to an in-root path.
+  if (decodedSuffix.startsWith('/')) {
+    return { ok: false, reason: 'traversal' };
+  }
+  if (decodedSuffix.includes('\\')) {
+    return { ok: false, reason: 'traversal' };
+  }
+  const segments = decodedSuffix.split(/[\\/]/);
+  if (segments.includes('..') || segments.includes('')) {
     return { ok: false, reason: 'traversal' };
   }
 
