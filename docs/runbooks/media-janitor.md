@@ -14,6 +14,28 @@ Related docs:
 
 **Before** running `prisma db push` for the schema delta that adds `@@index([deletedAt])` on `Media` and `@@index([state, publishDate, deletedAt])` on `Post`, the operator MUST create both indexes against the production database using `CREATE INDEX CONCURRENTLY`. Running `prisma db push` against a populated `Media`/`Post` table without pre-created indexes takes an `ACCESS EXCLUSIVE` lock and will outage the entire app for the duration of the build (multi-minute on production-sized tables). This is risk **R7** in the plan.
 
+### Step 1a — Name-collision pre-check (MUST run first)
+
+Before issuing the `CREATE INDEX CONCURRENTLY` block, verify that no pre-existing production index already uses either target indexname. The `CREATE INDEX CONCURRENTLY IF NOT EXISTS` form is idempotent only on **exact name match** — if a same-name index with a different column definition exists in prod, the `IF NOT EXISTS` silently no-ops, Prisma's subsequent `db push` sees the index as already present, and prod is left with a stale-named-but-wrong-shaped index. The candidate query would then Seq Scan and the janitor's first real cycle would throughput-stall the cron worker.
+
+Run against the production database via the Railway CLI (`railway run psql "$DATABASE_URL"` or the Railway DB shell) **before invoking `prisma db push`**:
+
+```sql
+-- Pre-deploy verification: ensure no name collisions with pre-existing prod indexes.
+-- Expected: 0 rows. Non-zero rows BLOCK deploy until investigated.
+SELECT indexname, indexdef FROM pg_indexes
+WHERE indexname IN ('Media_deletedAt_idx', 'Post_state_publishDate_deletedAt_idx');
+```
+
+If any row is returned, **halt the deploy** and compare each returned `indexdef` against the target schema delta:
+
+- Target `Media_deletedAt_idx` definition: `CREATE INDEX "Media_deletedAt_idx" ON public."Media" USING btree ("deletedAt")`.
+- Target `Post_state_publishDate_deletedAt_idx` definition: `CREATE INDEX "Post_state_publishDate_deletedAt_idx" ON public."Post" USING btree ("state", "publishDate", "deletedAt")`.
+
+A same-name index with a matching `indexdef` is benign — proceed to the `CREATE INDEX CONCURRENTLY` block (the `IF NOT EXISTS` will correctly no-op). A same-name index with a **different** `indexdef` will silently mask the migration and must be reconciled manually (typically: `DROP INDEX CONCURRENTLY "<name>";` followed by re-running the `CREATE INDEX CONCURRENTLY` block). Do not proceed with `prisma db push` until the pre-check returns 0 rows OR every returned row's `indexdef` matches the target.
+
+### Step 1b — Create indexes
+
 Run against the production database **before deploying the janitor branch**:
 
 ```sql
@@ -40,7 +62,7 @@ Follows plan §Implementation Sequence Phases A–E. Phases A–C are code merge
 
 ### Step 1 — Pre-deploy indexes (Phase D, pre)
 
-Run the `CREATE INDEX CONCURRENTLY` block in §1 above against the production database. **Do not proceed until both indexes exist.**
+Run §1 Step 1a (name-collision pre-check) and §1 Step 1b (`CREATE INDEX CONCURRENTLY`) in order against the production database. **Do not proceed until the pre-check returns 0 rows (or matching `indexdef`s) AND both indexes exist.**
 
 ### Step 2 — Deploy with dry-run + enabled (Phase D)
 
