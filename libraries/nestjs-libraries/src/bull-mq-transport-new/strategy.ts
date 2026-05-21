@@ -1,13 +1,19 @@
 import { CustomTransportStrategy, Server } from '@nestjs/microservices';
 import { Queue, Worker } from 'bullmq';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
-import { Logger } from '@nestjs/common';
+import { Logger, LoggerService } from '@nestjs/common';
 
 export class BullMqServer extends Server implements CustomTransportStrategy {
   // Additive-only observability logger. Today's silent-startup incident
   // was masked because nothing here emitted on bind — we now log each
   // queue and worker as they are constructed.
-  private readonly logger = new Logger(BullMqServer.name);
+  //
+  // `protected readonly logger: LoggerService` matches the base `Server.logger`
+  // declaration (same visibility + declared type) to satisfy TS2415 structural
+  // inheritance compat. The concrete `new Logger(BullMqServer.name)`
+  // initializer keeps the `[BullMqServer]` context tag — would otherwise
+  // degrade to `[Server]` since base initializes as `new Logger(Server.name)`.
+  protected readonly logger: LoggerService = new Logger(BullMqServer.name);
 
   queues: Map<string, Queue>;
   workers: Worker[] = [];
