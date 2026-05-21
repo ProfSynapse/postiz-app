@@ -273,7 +273,20 @@ export class MediaJanitorService {
         return;
 
       default: {
-        const _exhaustive: never = outcome;
+        // Narrow on the discriminant MEMBER (`outcome.result`), not the parent
+        // object. `HardDeleteRowOutcome` is a flat interface whose `result`
+        // field is a string-literal union (HardDeleteRowResult); TypeScript
+        // narrows the member inside switch cases but does NOT narrow the
+        // parent object (that would require a discriminated-union-of-objects
+        // shape like `{result:'deleted';...} | {result:'skipped-race';...}`).
+        // So `const _exhaustive: never = outcome` fails TS2322 (outcome is
+        // still HardDeleteRowOutcome, not never), but `= outcome.result`
+        // succeeds because all 5 string-literal cases have been matched. The
+        // exhaustiveness guarantee is preserved: adding a new variant to
+        // HardDeleteRowResult will still flag here. (Conceptually distinct
+        // from the loose-`!discriminant` family — this is a type-shape issue
+        // that would fail under strict mode too.)
+        const _exhaustive: never = outcome.result;
         throw new Error(
           `Unknown HardDeleteRowResult variant: ${JSON.stringify(_exhaustive)}`
         );
