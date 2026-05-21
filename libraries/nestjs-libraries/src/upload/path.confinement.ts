@@ -20,6 +20,11 @@
  *        b. `/^\/\d{4}\/\d{2}\/\d{2}\//` (legacy relative) -> use path as suffix
  *        c. `/^https?:\/\//` (not local prefix) -> `unsupported_scheme`
  *        d. Else -> `unsupported_scheme`
+ *   2.5. Reject syntactic traversal patterns pre-resolve: any segment ===
+ *        `..`, leading `/`, any backslash, any empty segment (catches %2F
+ *        injection signatures). All -> `traversal`. (SD2 defense-in-depth;
+ *        full rationale in the inline `Step 2.5` block within
+ *        `confineAndVerify` below.)
  *   3. `path.resolve(uploadRoot, decodedSuffix)` -> flattens `..` AND
  *      collapses legacy edge cases (`/year//month`, `/./month`).
  *   4. `path.relative(uploadRoot, target)` -> reject if it starts with `..`,
