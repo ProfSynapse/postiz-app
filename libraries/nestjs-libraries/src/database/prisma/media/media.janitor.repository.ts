@@ -123,6 +123,16 @@ export class MediaJanitorRepository {
   // Phase 1 transition. Idempotent via `deletedAt IS NULL` filter.
   // SQL stamps deletedAt = NOW() - (ageDays * INTERVAL '1 day'), keeping the
   // entire cutoff topology in SQL (Invariant #3).
+  //
+  // FK re-check at UPDATE time (security-engineer S-MINOR-1, M-toctou-fk-recheck):
+  // findSoftDeleteCandidates runs OUTSIDE any transaction, so a User.pictureId or
+  // SocialMediaAgency.logoId could be set against a candidate id between candidate
+  // selection and this UPDATE. Without these NOT EXISTS clauses, a now-referenced
+  // Media row would be soft-deleted (deletedAt stamped) and app-level read paths
+  // filtering on `deletedAt IS NULL` would treat the User's profile picture or
+  // the agency's logo as missing for up to graceDays. One subquery per stamped
+  // row eliminates the inconsistency window. Phase-2 hard-delete already has the
+  // same belt-and-braces guard inside its REPEATABLE READ txn.
   async markSoftDeleted(opts: {
     ids: string[];
     ageDays: number;
@@ -135,6 +145,12 @@ export class MediaJanitorRepository {
       SET "deletedAt" = NOW() - (${ageDays}::int * INTERVAL '1 day')
       WHERE "id" IN (${Prisma.join(opts.ids)})
         AND "deletedAt" IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM "User" u WHERE u."pictureId" = "Media"."id"
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM "SocialMediaAgency" a WHERE a."logoId" = "Media"."id"
+        )
     `;
 
     return { transitioned: toNumber(transitioned as unknown as number | bigint) };

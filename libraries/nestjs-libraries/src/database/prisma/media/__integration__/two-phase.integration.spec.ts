@@ -119,6 +119,66 @@ describeIfDb('MediaJanitorRepository two-phase state machine (integration)', (pr
     });
   });
 
+  describe('markSoftDeleted FK re-check (security-engineer S-MINOR-1 / M-toctou-fk-recheck)', () => {
+    it('User.pictureId set between candidate selection and UPDATE → row is SKIPPED (transitioned=0, deletedAt stays NULL)', async () => {
+      // Simulate the TOCTOU window: candidate enumeration ran with the row
+      // unreferenced, then a User.pictureId was set before the UPDATE fires.
+      // Without the FK NOT EXISTS predicate, markSoftDeleted would stamp
+      // deletedAt and the User's profile picture would render as missing for
+      // up to graceDays. With the predicate, the UPDATE matches 0 rows.
+      const mediaId = await seedScenario(prisma, 'old-publish-eligible');
+      await prisma.user.create({
+        data: {
+          email: `fk-mid-window-${mediaId}@example.test`,
+          pictureId: mediaId,
+          providerName: 'LOCAL',
+          name: 'Test',
+        },
+      });
+
+      const { transitioned } = await repository.markSoftDeleted({
+        ids: [mediaId],
+        ageDays: 7,
+      });
+      expect(transitioned).toBe(0);
+
+      const stillLive = await prisma.media.findUnique({ where: { id: mediaId } });
+      expect(stillLive?.deletedAt).toBeNull();
+    });
+
+    it('SocialMediaAgency.logoId set between candidate selection and UPDATE → row is SKIPPED', async () => {
+      const mediaId = await seedScenario(prisma, 'old-publish-eligible');
+      const media = await prisma.media.findUnique({ where: { id: mediaId } });
+      // Create an agency whose user/owner already exists for the seeded media's
+      // organization; logoId points at our candidate.
+      const owner = await prisma.user.create({
+        data: {
+          email: `agency-owner-${mediaId}@example.test`,
+          providerName: 'LOCAL',
+          name: 'Agency Owner',
+        },
+      });
+      await prisma.socialMediaAgency.create({
+        data: {
+          userId: owner.id,
+          name: 'Test Agency',
+          shortDescription: 'short',
+          description: 'desc',
+          logoId: media!.id,
+        },
+      });
+
+      const { transitioned } = await repository.markSoftDeleted({
+        ids: [mediaId],
+        ageDays: 7,
+      });
+      expect(transitioned).toBe(0);
+
+      const stillLive = await prisma.media.findUnique({ where: { id: mediaId } });
+      expect(stillLive?.deletedAt).toBeNull();
+    });
+  });
+
   describe('dry-run-default (invariant #4 dry-run leg)', () => {
     it('hardDeleteBatch({dryRun:true}) returns "deleted" outcome but ROLLBACKs the txn', async () => {
       const mediaId = await seedScenario(
@@ -331,6 +391,85 @@ describeIfDb('MediaJanitorRepository two-phase state machine (integration)', (pr
       expect(outA.map((o) => o.mediaId).sort()).toEqual(
         outB.map((o) => o.mediaId).sort()
       );
+    });
+  });
+
+  describe('concurrent-tick race (M-rc3, runbook §R15 single-replica assumption)', () => {
+    // Pins the EvalPlanQual + REPEATABLE READ + FOR UPDATE race-safety
+    // contract documented at media.janitor.repository.ts:143-150. Two
+    // concurrent hardDeleteBatch invocations against the SAME grace-expired
+    // candidate row must serialize on the per-row FOR UPDATE: the winner
+    // performs the DELETE, the loser observes the row mutated out from
+    // under its predicate via EvalPlanQual and yields `skipped-race` —
+    // never a double-delete, never a lost write.
+    //
+    // The race is the structural reason runbook §R15 forbids multi-replica
+    // janitor deploys: even if two replicas ticked at the same instant,
+    // the database-layer guard would still hold. This test exercises that
+    // guard directly on a single replica using two concurrent JS
+    // invocations, which Prisma's connection pool dispatches onto distinct
+    // DB sessions.
+    it('two concurrent hardDeleteBatch calls on the same row: one deleted, one skipped-race', async () => {
+      const mediaId = await seedScenario(
+        prisma,
+        'already-soft-deleted-grace-expired'
+      );
+
+      // Drive both calls in flight before either awaits. The candidate-
+      // discovery query (outside the per-row txn) runs once per call and
+      // observes the same single row; the race then unfolds inside the
+      // per-row REPEATABLE READ txn at the FOR UPDATE step.
+      const [outcomesA, outcomesB] = await Promise.all([
+        repository.hardDeleteBatch({
+          ageDays: 7,
+          graceDays: 7,
+          batchSize: 100,
+        }),
+        repository.hardDeleteBatch({
+          ageDays: 7,
+          graceDays: 7,
+          batchSize: 100,
+        }),
+      ]);
+
+      const all = [...outcomesA, ...outcomesB].filter(
+        (o) => o.mediaId === mediaId
+      );
+      const results = all.map((o) => o.result).sort();
+
+      // Exactly one tick wins the FOR UPDATE and performs the DELETE; the
+      // other re-evaluates the predicate via EvalPlanQual on the now-
+      // deleted tuple, finds 0 rows matching, and routes through the
+      // skipped-race no-op branch (repository.ts:205-213).
+      expect(results).toEqual(['deleted', 'skipped-race']);
+
+      // Post-condition: the row is gone exactly once. The LOSER must never
+      // reach the DELETE statement — contract pinned by the predicate
+      // re-check at repository.ts:199-202.
+      const gone = await prisma.media.findUnique({ where: { id: mediaId } });
+      expect(gone).toBeNull();
+    });
+
+    it('counter-test: a single hardDeleteBatch call (no concurrency) returns ONLY deleted, never skipped-race', async () => {
+      // Asymmetric pair for the race test above. If the FOR UPDATE guard
+      // were removed (or the predicate re-check at line 199-202 dropped),
+      // the concurrent test could still pass by accident (e.g., both
+      // succeeding). This baseline pins that a serial single-caller path
+      // never emits skipped-race — so the appearance of skipped-race in
+      // the concurrent case is genuinely produced by the race window, not
+      // by some spurious "always emit skipped-race" path.
+      const mediaId = await seedScenario(
+        prisma,
+        'already-soft-deleted-grace-expired'
+      );
+      const outcomes = await repository.hardDeleteBatch({
+        ageDays: 7,
+        graceDays: 7,
+        batchSize: 100,
+      });
+      const forRow = outcomes.filter((o) => o.mediaId === mediaId);
+      expect(forRow.map((o) => o.result)).toEqual(['deleted']);
+      expect(forRow.some((o) => o.result === 'skipped-race')).toBe(false);
     });
   });
 });
