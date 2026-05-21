@@ -66,15 +66,22 @@ export interface HardPhaseSummary {
 @Injectable()
 export class MediaJanitorService {
   private readonly logger = new Logger(MediaJanitorService.name);
-  private readonly uploadProvider: IUploadProvider;
+  private _uploadProvider: IUploadProvider | undefined;
 
   constructor(
     private readonly _repository: MediaJanitorRepository,
     private readonly _resolver: MediaPathResolver
-  ) {
-    // UploadFactory is a static factory in this codebase (not a provider),
-    // matching how the rest of the app instantiates storage backends.
-    this.uploadProvider = UploadFactory.createStorage();
+  ) {}
+
+  // Lazy-initialised to preserve invariant #6 (janitor must be INERT when
+  // STORAGE_PROVIDER !== 'local'). Constructing the upload provider eagerly
+  // would instantiate a cloud client (e.g. S3Client) at cron-boot time even
+  // when the janitor's preflight guards never run a delete.
+  private get uploadProvider(): IUploadProvider {
+    if (!this._uploadProvider) {
+      this._uploadProvider = UploadFactory.createStorage();
+    }
+    return this._uploadProvider;
   }
 
   /**
