@@ -116,6 +116,35 @@ export async function truncateMediaScope(
 }
 
 /**
+ * Idempotently upsert the prerequisite Organization and Integration rows that
+ * `mediaFactory()` / `postFactory()` reference via their `'org-test'` and
+ * `'integration-test'` id defaults. Both rows survive `truncateMediaScope`
+ * (which only truncates Post + Media), so the upsert is a no-op on every
+ * call after the first within a suite. Single round-trip via upsert is
+ * cleaner than `createMany({skipDuplicates:true})` for known-id single rows.
+ */
+async function seedPrerequisites(prisma: PrismaClient): Promise<void> {
+  await prisma.organization.upsert({
+    where: { id: 'org-test' },
+    update: {},
+    create: { id: 'org-test', name: 'Test Org' },
+  });
+  await prisma.integration.upsert({
+    where: { id: 'integration-test' },
+    update: {},
+    create: {
+      id: 'integration-test',
+      internalId: 'integration-test-internal',
+      organizationId: 'org-test',
+      name: 'Test Integration',
+      providerIdentifier: 'test-provider',
+      type: 'social',
+      token: 'test-token',
+    },
+  });
+}
+
+/**
  * Insert one scenario per name. Returns the media row id the test should
  * focus on (most scenarios center on a single Media row; multi-row scenarios
  * return the FIRST id and the test can re-query for the rest).
@@ -125,6 +154,7 @@ export async function seedScenario(
   scenario: ScenarioName,
   ageDays = 7
 ): Promise<string> {
+  await seedPrerequisites(prisma);
   const PAST = (days: number): Date =>
     new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const media = mediaFactory();
