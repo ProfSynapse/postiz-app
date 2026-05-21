@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   ValidationPipe,
 } from '@nestjs/common';
 import { PostsRepository } from '@gitroom/nestjs-libraries/database/prisma/posts/posts.repository';
@@ -48,6 +49,10 @@ type PostWithConditionals = Post & {
 
 @Injectable()
 export class PostsService {
+  private readonly logger = new Logger(PostsService.name);
+  private readonly queueCleanupTimeoutMs = Number(
+    process.env.POSTIZ_QUEUE_CLEANUP_TIMEOUT_MS || 1500
+  );
   private storage = UploadFactory.createStorage();
   constructor(
     private _postRepository: PostsRepository,
@@ -621,7 +626,7 @@ export class PostsService {
   async deletePost(orgId: string, group: string) {
     const post = await this._postRepository.deletePost(orgId, group);
     if (post?.id) {
-      await this._workerServiceProducer.delete('post', post.id);
+      await this.deletePostQueueBestEffort(post.id);
       return { id: post.id };
     }
 
@@ -661,8 +666,7 @@ export class PostsService {
         return [] as any[];
       }
 
-      await this._workerServiceProducer.delete(
-        'post',
+      await this.deletePostQueueBestEffort(
         previousPost ? previousPost : posts?.[0]?.id
       );
 
@@ -670,21 +674,11 @@ export class PostsService {
         body.type === 'now' ||
         (body.type === 'schedule' && dayjs(body.date).isAfter(dayjs()))
       ) {
-        this._workerServiceProducer.emit('post', {
-          id: posts[0].id,
-          options: {
-            delay:
-              body.type === 'now'
-                ? 0
-                : dayjs(posts[0].publishDate).diff(dayjs(), 'millisecond'),
-          },
-          payload: {
-            id: posts[0].id,
-            delay:
-              body.type === 'now'
-                ? 0
-                : dayjs(posts[0].publishDate).diff(dayjs(), 'millisecond'),
-          },
+        this.enqueuePostJobBestEffort(posts[0].id, {
+          delay:
+            body.type === 'now'
+              ? 0
+              : dayjs(posts[0].publishDate).diff(dayjs(), 'millisecond'),
         });
       }
 
@@ -698,6 +692,61 @@ export class PostsService {
     return postList;
   }
 
+  private async deletePostQueueBestEffort(postId?: string) {
+    if (!postId) {
+      return;
+    }
+
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this._workerServiceProducer.delete('post', postId),
+        new Promise((resolve) => {
+          timeout = setTimeout(resolve, this.queueCleanupTimeoutMs);
+        }),
+      ]);
+    } catch (err) {
+      this.logger.warn(
+        `Failed to delete queued post job ${postId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
+  private enqueuePostJobBestEffort(postId: string, options: { delay: number }) {
+    try {
+      this._workerServiceProducer
+        .emit('post', {
+          id: postId,
+          options,
+          payload: {
+            id: postId,
+            delay: options.delay,
+          },
+        })
+        .subscribe({
+          error: (err) => {
+            this.logger.warn(
+              `Failed to enqueue post job ${postId}: ${
+                err instanceof Error ? err.message : String(err)
+              }`
+            );
+          },
+        });
+    } catch (err) {
+      this.logger.warn(
+        `Failed to enqueue post job ${postId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  }
+
   async separatePosts(content: string, len: number) {
     return this.openaiService.separatePosts(content, len);
   }
@@ -705,17 +754,10 @@ export class PostsService {
   async changeDate(orgId: string, id: string, date: string) {
     const getPostById = await this._postRepository.getPostById(id, orgId);
 
-    await this._workerServiceProducer.delete('post', id);
+    await this.deletePostQueueBestEffort(id);
     if (getPostById?.state !== 'DRAFT') {
-      this._workerServiceProducer.emit('post', {
-        id: id,
-        options: {
-          delay: dayjs(date).diff(dayjs(), 'millisecond'),
-        },
-        payload: {
-          id: id,
-          delay: dayjs(date).diff(dayjs(), 'millisecond'),
-        },
+      this.enqueuePostJobBestEffort(id, {
+        delay: dayjs(date).diff(dayjs(), 'millisecond'),
       });
     }
 
