@@ -18,3 +18,30 @@ dockerfilePath = "Dockerfile.dev"
 # reclamation broken.
 #
 # See docs/runbooks/media-janitor.md section 2 for the rollout checklist.
+
+# === Deploy Healthcheck Note
+#
+# nginx (inside the container) listens on :5000 and proxies /api/* to the
+# backend on :3000. The backend (Nest) cold-boots in 30-60s because of TS
+# compilation and module initialization, while nginx binds :5000 within
+# seconds. Without an HTTP healthcheck configured here, Railway falls back
+# to a TCP probe on :5000, sees nginx up almost immediately, and routes
+# traffic to the new container before the backend is ready -- which causes
+# the browser's /api/* requests to hit nginx, find no upstream, and return
+# 502 Bad Gateway on every deploy.
+#
+# /api/health/deep (apps/backend/src/api/routes/health.controller.ts)
+# returns 200 only after redis, postgres, and bullmq sub-probes pass.
+# Pointing Railway's HTTP healthcheck at it holds traffic on the old
+# container until the new backend is fully ready. healthcheckTimeout is
+# set to 300s (5 min) to give 5x headroom over the worst observed cold-
+# boot, since Railway's default (~100s) is borderline-tight against a
+# fresh container with TS compilation. restartPolicyType = "ON_FAILURE"
+# with maxRetries = 3 absorbs transient infra hiccups without locking a
+# permanently-broken deploy into a restart loop.
+
+[deploy]
+healthcheckPath = "/api/health/deep"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
