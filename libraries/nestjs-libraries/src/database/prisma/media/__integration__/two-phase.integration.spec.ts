@@ -11,6 +11,7 @@
 //                         no-pub-ref outcomes — counter-test-by-revert on RC-1)
 //   - scenario-W         (FakeClock equivalence: graceDays-alone == graceDays
 //                         + ageDays for the hard-delete cutoff). Auditor YELLOW.
+import { PrismaClient } from '@prisma/client';
 import { MediaJanitorRepository } from '../media.janitor.repository';
 import { PrismaService } from '../../prisma.service';
 import {
@@ -133,6 +134,7 @@ describeIfDb('MediaJanitorRepository two-phase state machine (integration)', (pr
           pictureId: mediaId,
           providerName: 'LOCAL',
           name: 'Test',
+          timezone: 0,
         },
       });
 
@@ -156,6 +158,7 @@ describeIfDb('MediaJanitorRepository two-phase state machine (integration)', (pr
           email: `agency-owner-${mediaId}@example.test`,
           providerName: 'LOCAL',
           name: 'Agency Owner',
+          timezone: 0,
         },
       });
       await prisma.socialMediaAgency.create({
@@ -256,6 +259,7 @@ describeIfDb('MediaJanitorRepository two-phase state machine (integration)', (pr
           pictureId: media.id,
           providerName: 'LOCAL',
           name: 'Test',
+          timezone: 0,
         },
       });
       const outcomes = await repository.hardDeleteBatch({
@@ -410,44 +414,152 @@ describeIfDb('MediaJanitorRepository two-phase state machine (integration)', (pr
     // invocations, which Prisma's connection pool dispatches onto distinct
     // DB sessions.
     it('two concurrent hardDeleteBatch calls on the same row: one deleted, one skipped-race', async () => {
+      // ────────────────────────────────────────────────────────────────
+      // Advisory-lock barrier mechanism (race-determinism harness).
+      //
+      // Problem this solves: Promise.all([call1, call2]) does NOT
+      // guarantee both per-row REPEATABLE READ transactions have reached
+      // the FOR UPDATE step before either commits. Without the barrier,
+      // a fast-enough machine can serialize the two calls and emit
+      // ['deleted', 'deleted'] (winner) or ['deleted'] (loser observed
+      // empty candidate set on its outer discovery query) — both legal
+      // outcomes for the unsynchronized race, but neither exercises the
+      // 40001 → skipped-race code path that PR #11 must pin.
+      //
+      // Mechanism (Option B, accepted by team-lead via TEACHBACK #80):
+      //   1. A separate holder PrismaClient (distinct DB session)
+      //      acquires a SESSION-level pg_advisory_lock(key).
+      //   2. We set JANITOR_TEST_ADVISORY_LOCK_KEY in process.env so the
+      //      production hook in repository.ts opens each txn with a
+      //      pg_advisory_xact_lock(key) — both contestants block.
+      //   3. We poll pg_stat_activity for two waiters on the advisory
+      //      lock (wait_event_type='Lock', wait_event='advisory'), with
+      //      a bounded sleep fallback if polling proves unreliable on
+      //      this Postgres image.
+      //   4. The holder releases via pg_advisory_unlock. Both contestant
+      //      txns unblock in DB-scheduled order, race through FOR UPDATE
+      //      deterministically, and emit ['deleted', 'skipped-race'].
+      //
+      // Why a separate PrismaClient for the holder: pg_advisory_lock is
+      // session-scoped; if we acquired it on the suite's shared `prisma`
+      // session, every subsequent query on that session (including the
+      // contestant calls if Prisma pooled them onto the same conn) would
+      // pre-own the lock and the barrier would short-circuit.
+      // ────────────────────────────────────────────────────────────────
+      const url = process.env.TEST_DATABASE_URL;
+      if (!url) {
+        throw new Error(
+          'TEST_DATABASE_URL must be set for the advisory-lock barrier'
+        );
+      }
+      const ADVISORY_KEY = 909119; // arbitrary positive int4, test-local
+      const holder = new PrismaClient({ datasources: { db: { url } } });
+
       const mediaId = await seedScenario(
         prisma,
         'already-soft-deleted-grace-expired'
       );
 
-      // Drive both calls in flight before either awaits. The candidate-
-      // discovery query (outside the per-row txn) runs once per call and
-      // observes the same single row; the race then unfolds inside the
-      // per-row REPEATABLE READ txn at the FOR UPDATE step.
-      const [outcomesA, outcomesB] = await Promise.all([
-        repository.hardDeleteBatch({
-          ageDays: 7,
-          graceDays: 7,
-          batchSize: 100,
-        }),
-        repository.hardDeleteBatch({
-          ageDays: 7,
-          graceDays: 7,
-          batchSize: 100,
-        }),
-      ]);
+      try {
+        // 1) Holder acquires SESSION-level advisory lock.
+        await holder.$executeRawUnsafe(
+          'SELECT pg_advisory_lock($1)',
+          ADVISORY_KEY
+        );
 
-      const all = [...outcomesA, ...outcomesB].filter(
-        (o) => o.mediaId === mediaId
-      );
-      const results = all.map((o) => o.result).sort();
+        // 2) Arm the production hook for the duration of this test only.
+        process.env.JANITOR_TEST_ADVISORY_LOCK_KEY = String(ADVISORY_KEY);
 
-      // Exactly one tick wins the FOR UPDATE and performs the DELETE; the
-      // other re-evaluates the predicate via EvalPlanQual on the now-
-      // deleted tuple, finds 0 rows matching, and routes through the
-      // skipped-race no-op branch (repository.ts:205-213).
-      expect(results).toEqual(['deleted', 'skipped-race']);
+        // 3) Fire both calls; they will block inside their respective
+        //    $transaction bodies on pg_advisory_xact_lock(KEY).
+        const racePromise = Promise.all([
+          repository.hardDeleteBatch({
+            ageDays: 7,
+            graceDays: 7,
+            batchSize: 100,
+          }),
+          repository.hardDeleteBatch({
+            ageDays: 7,
+            graceDays: 7,
+            batchSize: 100,
+          }),
+        ]);
 
-      // Post-condition: the row is gone exactly once. The LOSER must never
-      // reach the DELETE statement — contract pinned by the predicate
-      // re-check at repository.ts:199-202.
-      const gone = await prisma.media.findUnique({ where: { id: mediaId } });
-      expect(gone).toBeNull();
+        // 4) Poll pg_stat_activity until two contestants are queued on
+        //    the advisory lock. Bounded sleep fallback after exhausting
+        //    poll budget (defends against PG image / view-permission
+        //    weirdness where wait_event may not surface immediately).
+        const POLL_INTERVAL_MS = 25;
+        const POLL_BUDGET_MS = 5000;
+        const deadline = Date.now() + POLL_BUDGET_MS;
+        let waitersSeen = 0;
+        while (Date.now() < deadline) {
+          const rows = await holder.$queryRaw<{ n: bigint | number }[]>`
+            SELECT COUNT(*)::int8 AS n
+            FROM pg_stat_activity
+            WHERE wait_event_type = 'Lock'
+              AND wait_event = 'advisory'
+          `;
+          waitersSeen = Number(rows[0]?.n ?? 0);
+          if (waitersSeen >= 2) break;
+          await new Promise((resolve) =>
+            setTimeout(resolve, POLL_INTERVAL_MS)
+          );
+        }
+
+        if (waitersSeen < 2) {
+          // Polling fallback: bounded sleep, then release. Worst case
+          // we degrade to the pre-barrier timing window — but the
+          // assertions below remain the contract we pin.
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+
+        // 5) Release the gate — both contestants unblock.
+        await holder.$executeRawUnsafe(
+          'SELECT pg_advisory_unlock($1)',
+          ADVISORY_KEY
+        );
+
+        const [outcomesA, outcomesB] = await racePromise;
+
+        const all = [...outcomesA, ...outcomesB].filter(
+          (o) => o.mediaId === mediaId
+        );
+        const results = all.map((o) => o.result).sort();
+
+        // Exactly one tick wins the FOR UPDATE and performs the DELETE; the
+        // other loses the lock race. Mechanism under REPEATABLE READ + FOR
+        // UPDATE (set at repository.ts processHardDeleteRow's $transaction
+        // call): Postgres does NOT fire EvalPlanQual under RR — the loser's
+        // txn aborts with SQLSTATE 40001 ("could not serialize access due
+        // to concurrent update"). The catch block in processHardDeleteRow
+        // classifies 40001 specifically (via isSerializationFailure) and
+        // emits a skipped-race outcome, routing the loser through the
+        // error-handler path rather than the in-txn predicate re-check
+        // (which is structurally unreachable under RR for the contended
+        // single-row case).
+        expect(results).toEqual(['deleted', 'skipped-race']);
+
+        // Post-condition: the row is gone exactly once. The LOSER must never
+        // reach the DELETE statement — contract pinned by the FOR UPDATE
+        // + RepeatableRead serialization-abort path (loser's tx never
+        // executes the DELETE statement because it aborts with 40001
+        // before reaching it).
+        const gone = await prisma.media.findUnique({ where: { id: mediaId } });
+        expect(gone).toBeNull();
+      } finally {
+        delete process.env.JANITOR_TEST_ADVISORY_LOCK_KEY;
+        // Best-effort holder cleanup. Unlock is idempotent: if we
+        // already unlocked above it returns false (no error).
+        try {
+          await holder.$executeRawUnsafe(
+            'SELECT pg_advisory_unlock_all()'
+          );
+        } catch {
+          // ignore
+        }
+        await holder.$disconnect();
+      }
     });
 
     it('counter-test: a single hardDeleteBatch call (no concurrency) returns ONLY deleted, never skipped-race', async () => {

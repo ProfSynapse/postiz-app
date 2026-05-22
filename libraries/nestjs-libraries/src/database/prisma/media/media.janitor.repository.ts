@@ -57,6 +57,24 @@ interface HardDeleteLockRow {
 const toNumber = (v: number | bigint): number =>
   typeof v === 'bigint' ? Number(v) : v;
 
+// Detect Postgres SQLSTATE 40001 ("could not serialize access due to
+// concurrent update") wrapped by Prisma. Used by Path B race-loss
+// classification in processHardDeleteRow's catch block — see the
+// inline comment there for the full mechanism.
+//
+// Prisma wraps raw-SQL failures as PrismaClientKnownRequestError with
+// code P2010; the underlying SQLSTATE surfaces on err.meta.code
+// (Prisma 4+). Defensive fallback: match the substring "40001" in the
+// error message (Prisma's raw-query wrap formats as
+// "Raw query failed. Code: 40001. Message: ..."). The substring check
+// guards against meta-shape drift across Prisma versions.
+const isSerializationFailure = (err: unknown): boolean => {
+  if (!(err instanceof Prisma.PrismaClientKnownRequestError)) return false;
+  if (err.code !== 'P2010') return false;
+  const metaCode = (err.meta as { code?: unknown } | undefined)?.code;
+  return metaCode === '40001' || err.message.includes('40001');
+};
+
 @Injectable()
 export class MediaJanitorRepository {
   private readonly logger = new Logger(MediaJanitorRepository.name);
@@ -209,6 +227,49 @@ export class MediaJanitorRepository {
     try {
       return await this._prisma.$transaction(
         async (tx) => {
+          // ────────────────────────────────────────────────────────────────
+          // TEST-ONLY hook: deterministic concurrent-tick race barrier.
+          //
+          // This is the ONLY production-code test hook in this module —
+          // there are no others. When JANITOR_TEST_ADVISORY_LOCK_KEY is
+          // unset (the production case), this block is a single env-var
+          // read + branch with zero DB cost. When set, both concurrent
+          // txns block on a session-level pg_advisory_lock held by the
+          // integration test, releasing only after the test has
+          // confirmed both contestants are queued — eliminating the
+          // timing flake otherwise present in two-phase.integration.spec
+          // §concurrent-tick race.
+          //
+          // The key is parsed as int4 and range-checked BEFORE being
+          // interpolated into raw SQL: pg_advisory_xact_lock(bigint)
+          // accepts int4/int8, and Postgres' wire protocol numeric param
+          // binding works with $executeRawUnsafe. If parse fails, throw
+          // — a malformed key is a test-rig misconfiguration, not a
+          // condition we want to silently degrade.
+          //
+          // See: two-phase.integration.spec.ts §concurrent-tick race
+          //      docs/plans/media-janitor-plan.md §R15 (race contract)
+          // ────────────────────────────────────────────────────────────────
+          const testLockKey = process.env.JANITOR_TEST_ADVISORY_LOCK_KEY;
+          if (testLockKey) {
+            const parsed = Number.parseInt(testLockKey, 10);
+            if (
+              !Number.isFinite(parsed) ||
+              !Number.isInteger(parsed) ||
+              parsed < -2147483648 ||
+              parsed > 2147483647 ||
+              String(parsed) !== testLockKey.trim()
+            ) {
+              throw new Error(
+                `JANITOR_TEST_ADVISORY_LOCK_KEY must be a signed 32-bit integer; got: ${testLockKey}`,
+              );
+            }
+            await tx.$executeRawUnsafe(
+              'SELECT pg_advisory_xact_lock($1)',
+              parsed,
+            );
+          }
+
           // Step 2: row-lock + re-assert cutoff inside the txn.
           const locked = await tx.$queryRaw<HardDeleteLockRow[]>`
             SELECT "id", "path", "organizationId", "fileSize", "deletedAt"
@@ -290,6 +351,42 @@ export class MediaJanitorRepository {
     } catch (err) {
       if (err instanceof DryRunRollback) {
         return err.outcome;
+      }
+      // Path B race-loss detection: under REPEATABLE READ + FOR UPDATE
+      // (set at the $transaction call above), Postgres does NOT fire
+      // EvalPlanQual when a concurrent tx has DELETEd+COMMITted the
+      // locked row — the loser aborts with SQLSTATE 40001 ("could not
+      // serialize access due to concurrent update"). Prisma surfaces
+      // this as PrismaClientKnownRequestError code P2010 (raw query
+      // failure) with the SQLSTATE on err.meta.code. The in-txn
+      // predicate re-check at the `locked.length === 0` branch is
+      // structurally unreachable for the contended-single-row case
+      // under RR; the 'skipped-race' outcome therefore flows HERE.
+      // The branch above remains reachable for the non-contended
+      // row-vanish case (row gone between candidate query and the
+      // FOR UPDATE inside the txn, no concurrent lock fight).
+      if (isSerializationFailure(err)) {
+        // Race-loss is an EXPECTED operational outcome under Path B, not
+        // an error condition — log at INFO and emit a Sentry breadcrumb
+        // (not a captured exception) for race-rate visibility without
+        // page-noise. Standard log queries on the `race-loss` message
+        // string give us race-rate trending.
+        this.logger.log(
+          `media-janitor.hard-delete.race-loss mediaId=${mediaId} sqlstate=40001`,
+        );
+        Sentry.addBreadcrumb({
+          category: 'media-janitor',
+          message: 'hard-delete.race-loss',
+          level: 'info',
+          data: { mediaId, sqlstate: '40001' },
+        });
+        return {
+          mediaId,
+          path: '',
+          fileSize: 0,
+          organizationId: '',
+          result: 'skipped-race',
+        };
       }
       Sentry.captureException(err, {
         extra: { mediaId, method: 'hardDeleteBatch.perRow' },
