@@ -45,6 +45,29 @@ export class PostsRepository {
     });
   }
 
+  checkOverdueQueuedPosts() {
+    return this._post.model.post.findMany({
+      where: {
+        integration: {
+          refreshNeeded: false,
+          inBetweenSteps: false,
+          disabled: false,
+        },
+        publishDate: {
+          lte: dayjs.utc().subtract(2, 'minute').toDate(),
+          gte: dayjs.utc().subtract(2, 'hour').toDate(),
+        },
+        state: 'QUEUE',
+        deletedAt: null,
+        parentPostId: null,
+      },
+      select: {
+        id: true,
+        publishDate: true,
+      },
+    });
+  }
+
   searchForMissingThreeHoursPosts() {
     return this._post.model.post.findMany({
       where: {

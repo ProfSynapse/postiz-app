@@ -72,6 +72,9 @@ export class PostsService {
   checkPending15minutesBack() {
     return this._postRepository.checkPending15minutesBack();
   }
+  checkOverdueQueuedPosts() {
+    return this._postRepository.checkOverdueQueuedPosts();
+  }
   searchForMissingThreeHoursPosts() {
     return this._postRepository.searchForMissingThreeHoursPosts();
   }
