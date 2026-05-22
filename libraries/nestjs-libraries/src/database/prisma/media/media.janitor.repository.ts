@@ -323,9 +323,20 @@ export class MediaJanitorRepository {
       // row-vanish case (row gone between candidate query and the
       // FOR UPDATE inside the txn, no concurrent lock fight).
       if (isSerializationFailure(err)) {
-        this.logger.warn(
+        // Race-loss is an EXPECTED operational outcome under Path B, not
+        // an error condition — log at INFO and emit a Sentry breadcrumb
+        // (not a captured exception) for race-rate visibility without
+        // page-noise. Standard log queries on the `race-loss` message
+        // string give us race-rate trending.
+        this.logger.log(
           `media-janitor.hard-delete.race-loss mediaId=${mediaId} sqlstate=40001`,
         );
+        Sentry.addBreadcrumb({
+          category: 'media-janitor',
+          message: 'hard-delete.race-loss',
+          level: 'info',
+          data: { mediaId, sqlstate: '40001' },
+        });
         return {
           mediaId,
           path: '',
