@@ -1,0 +1,125 @@
+---
+name: Test
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - package.json
+      - pnpm-lock.yaml
+      - nx.json
+      - jest.config.ts
+      - jest.preset.js
+      - apps/**
+      - '!apps/docs/**'
+      - libraries/**
+      - .github/workflows/test.yml
+
+  push:
+    branches:
+      - main
+    paths:
+      - package.json
+      - pnpm-lock.yaml
+      - nx.json
+      - jest.config.ts
+      - jest.preset.js
+      - apps/**
+      - '!apps/docs/**'
+      - libraries/**
+      - .github/workflows/test.yml
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Run jest via Nx
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: ['20.17.0']
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.6.1
+          run_install: false
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: Setup .nx cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .nx/cache
+          key: ${{ runner.os }}-nx-${{ hashFiles('**/pnpm-lock.yaml') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-nx-${{ hashFiles('**/pnpm-lock.yaml') }}-
+            ${{ runner.os }}-nx-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify test target wiring
+        run: |
+          projects=$(pnpm exec nx show projects --with-target=test --json 2>/dev/null)
+          echo "Projects with test target (raw): $projects"
+          count=$(printf '%s' "$projects" | python3 -c "
+          import sys, json
+          raw = sys.stdin.read().strip()
+          try:
+              data = json.loads(raw)
+              print(len(data))
+          except json.JSONDecodeError:
+              lines = [l for l in raw.splitlines() if l.strip()]
+              print(len(lines))
+          ")
+          echo "Project count: $count"
+          if [ "$count" -lt 2 ]; then
+            echo "::error::Expected >= 2 projects with a 'test' target (nestjs-libraries + postiz-backend); got $count."
+            echo "::error::Either Nx project wiring is broken or apps/backend project.json is missing its test target."
+            exit 1
+          fi
+
+      - name: Run tests
+        run: pnpm exec nx run-many --target=test --all --parallel=3 --output-style=stream
+
+      - name: Upload coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.run_id }}
+          path: |
+            coverage/**
+          if-no-files-found: ignore
+          retention-days: 7

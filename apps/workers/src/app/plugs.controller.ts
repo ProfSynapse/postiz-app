@@ -1,12 +1,16 @@
 import { Controller } from '@nestjs/common';
 import { EventPattern, Transport } from '@nestjs/microservices';
 import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.service';
+import {
+  PLUGS_QUEUE_PATTERN,
+  INTERNAL_PLUGS_QUEUE_PATTERN,
+} from '@gitroom/nestjs-libraries/bull-mq-transport-new/queues.constants';
 
 @Controller()
 export class PlugsController {
   constructor(private _integrationService: IntegrationService) {}
 
-  @EventPattern('plugs', Transport.REDIS)
+  @EventPattern(PLUGS_QUEUE_PATTERN, Transport.REDIS)
   async plug(data: {
     plugId: string;
     postId: string;
@@ -24,7 +28,7 @@ export class PlugsController {
     }
   }
 
-  @EventPattern('internal-plugs', Transport.REDIS)
+  @EventPattern(INTERNAL_PLUGS_QUEUE_PATTERN, Transport.REDIS)
   async internalPlug(data: {
     post: string;
     originalIntegration: string;

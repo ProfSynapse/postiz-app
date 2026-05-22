@@ -1,8 +1,20 @@
 import { CustomTransportStrategy, Server } from '@nestjs/microservices';
 import { Queue, Worker } from 'bullmq';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
+import { Logger, LoggerService } from '@nestjs/common';
 
 export class BullMqServer extends Server implements CustomTransportStrategy {
+  // Additive-only observability logger. Today's silent-startup incident
+  // was masked because nothing here emitted on bind — we now log each
+  // queue and worker as they are constructed.
+  //
+  // `protected readonly logger: LoggerService` matches the base `Server.logger`
+  // declaration (same visibility + declared type) to satisfy TS2415 structural
+  // inheritance compat. The concrete `new Logger(BullMqServer.name)`
+  // initializer keeps the `[BullMqServer]` context tag — would otherwise
+  // degrade to `[Server]` since base initializes as `new Logger(Server.name)`.
+  protected readonly logger: LoggerService = new Logger(BullMqServer.name);
+
   queues: Map<string, Queue>;
   workers: Worker[] = [];
 
@@ -10,14 +22,22 @@ export class BullMqServer extends Server implements CustomTransportStrategy {
    * This method is triggered when you run "app.listen()".
    */
   listen(callback: () => void) {
-    this.queues = [...this.messageHandlers.keys()].reduce((all, pattern) => {
+    const patterns = [...this.messageHandlers.keys()];
+    this.logger.log(
+      `Binding ${patterns.length} BullMQ queue(s) for patterns: ${
+        patterns.length ? patterns.join(', ') : '(none)'
+      }`
+    );
+
+    this.queues = patterns.reduce((all, pattern) => {
       all.set(pattern, new Queue(pattern, { connection: ioRedis }));
+      this.logger.log(`Queue bound: pattern="${pattern}"`);
       return all;
     }, new Map());
 
     this.workers = Array.from(this.messageHandlers).map(
       ([pattern, handler]) => {
-        return new Worker(
+        const worker = new Worker(
           pattern,
           async (job) => {
             const stream$ = this.transformToObservable(
@@ -44,9 +64,16 @@ export class BullMqServer extends Server implements CustomTransportStrategy {
             },
           }
         );
+        this.logger.log(
+          `Worker bound: pattern="${pattern}" concurrency=300 status=listening`
+        );
+        return worker;
       }
     );
 
+    this.logger.log(
+      `BullMQ transport ready: ${this.queues.size} queue(s), ${this.workers.length} worker(s)`
+    );
     callback();
   }
 
