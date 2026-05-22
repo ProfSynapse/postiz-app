@@ -227,6 +227,49 @@ export class MediaJanitorRepository {
     try {
       return await this._prisma.$transaction(
         async (tx) => {
+          // ────────────────────────────────────────────────────────────────
+          // TEST-ONLY hook: deterministic concurrent-tick race barrier.
+          //
+          // This is the ONLY production-code test hook in this module —
+          // there are no others. When JANITOR_TEST_ADVISORY_LOCK_KEY is
+          // unset (the production case), this block is a single env-var
+          // read + branch with zero DB cost. When set, both concurrent
+          // txns block on a session-level pg_advisory_lock held by the
+          // integration test, releasing only after the test has
+          // confirmed both contestants are queued — eliminating the
+          // timing flake otherwise present in two-phase.integration.spec
+          // §concurrent-tick race.
+          //
+          // The key is parsed as int4 and range-checked BEFORE being
+          // interpolated into raw SQL: pg_advisory_xact_lock(bigint)
+          // accepts int4/int8, and Postgres' wire protocol numeric param
+          // binding works with $executeRawUnsafe. If parse fails, throw
+          // — a malformed key is a test-rig misconfiguration, not a
+          // condition we want to silently degrade.
+          //
+          // See: two-phase.integration.spec.ts §concurrent-tick race
+          //      docs/plans/media-janitor-plan.md §R15 (race contract)
+          // ────────────────────────────────────────────────────────────────
+          const testLockKey = process.env.JANITOR_TEST_ADVISORY_LOCK_KEY;
+          if (testLockKey) {
+            const parsed = Number.parseInt(testLockKey, 10);
+            if (
+              !Number.isFinite(parsed) ||
+              !Number.isInteger(parsed) ||
+              parsed < -2147483648 ||
+              parsed > 2147483647 ||
+              String(parsed) !== testLockKey.trim()
+            ) {
+              throw new Error(
+                `JANITOR_TEST_ADVISORY_LOCK_KEY must be a signed 32-bit integer; got: ${testLockKey}`,
+              );
+            }
+            await tx.$executeRawUnsafe(
+              'SELECT pg_advisory_xact_lock($1)',
+              parsed,
+            );
+          }
+
           // Step 2: row-lock + re-assert cutoff inside the txn.
           const locked = await tx.$queryRaw<HardDeleteLockRow[]>`
             SELECT "id", "path", "organizationId", "fileSize", "deletedAt"
