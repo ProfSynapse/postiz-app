@@ -8,69 +8,73 @@ process.env.TZ = 'UTC';
 
 import cookieParser from 'cookie-parser';
 import { Logger, ValidationPipe } from '@nestjs/common';
+import type { INestApplication } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module';
 
 import { SubscriptionExceptionFilter } from '@gitroom/backend/services/auth/permissions/subscription.exception';
 import { HttpExceptionFilter } from '@gitroom/nestjs-libraries/services/exception.filter';
 import { ConfigurationChecker } from '@gitroom/helpers/configuration/configuration.checker';
-import { startMcp } from '@gitroom/nestjs-libraries/chat/start.mcp';
 
 const MCP_STARTUP_TIMEOUT_MS = 30_000;
+const BACKEND_STARTUP_TIMEOUT_MS = 180_000;
 
-async function start() {
-  const app = await NestFactory.create(AppModule, {
-    rawBody: true,
-    cors: {
-      ...(!process.env.NOT_SECURED ? { credentials: true } : {}),
-      allowedHeaders: ['Content-Type', 'Authorization', 'x-copilotkit-runtime-client-gql-version'],
-      exposedHeaders: [
-        'reload',
-        'onboarding',
-        'activate',
-        'x-copilotkit-runtime-client-gql-version',
-        ...(process.env.NOT_SECURED ? ['auth', 'showorg', 'impersonate'] : []),
-      ],
-      origin: [
-        process.env.FRONTEND_URL,
-        'http://localhost:6274',
-        ...(process.env.MAIN_URL ? [process.env.MAIN_URL] : []),
-      ],
-    },
+async function withStartupTimeout<T>(
+  name: string,
+  promise: Promise<T>,
+  timeoutMs: number
+): Promise<T> {
+  let timeoutHandle: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timeoutHandle = setTimeout(
+      () => reject(new Error(`${name} timed out after ${timeoutMs}ms`)),
+      timeoutMs
+    );
   });
 
-  // Bound MCP startup so a hang in Mastra/@mastra/pg cannot block app.listen().
-  // The orphaned startMcp promise keeps running so MCP may still come up late; we
-  // attach a no-op catch to avoid unhandledRejection if it later rejects.
-  const mcpPromise = startMcp(app);
   try {
-    let timeoutHandle: NodeJS.Timeout | undefined;
-    const timeoutPromise = new Promise<never>((_resolve, reject) => {
-      timeoutHandle = setTimeout(
-        () =>
-          reject(
-            new Error(
-              `MCP startup did not complete within ${MCP_STARTUP_TIMEOUT_MS}ms`
-            )
-          ),
-        MCP_STARTUP_TIMEOUT_MS
-      );
-    });
-    try {
-      await Promise.race([mcpPromise, timeoutPromise]);
-    } finally {
-      if (timeoutHandle) clearTimeout(timeoutHandle);
-    }
-  } catch (e) {
-    Logger.warn(
-      `MCP startup failed or timed out; backend will continue without MCP. The /mcp/:id endpoint will be unavailable until the next successful boot. Reason: ${
-        (e as Error)?.message ?? e
-      }`,
-      'MCP'
-    );
-    // Swallow late rejection from the orphaned mcpPromise to avoid unhandledRejection.
-    mcpPromise.catch(() => undefined);
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
   }
+}
+
+async function start() {
+  Logger.log('Backend bootstrap starting', 'Bootstrap');
+  Logger.log('Loading backend AppModule', 'Bootstrap');
+  const { AppModule } = await withStartupTimeout(
+    'Backend AppModule import',
+    import('./app.module'),
+    BACKEND_STARTUP_TIMEOUT_MS
+  );
+
+  Logger.log('Creating Nest backend application', 'Bootstrap');
+  const app = await withStartupTimeout(
+    'Nest backend application creation',
+    NestFactory.create(AppModule, {
+      rawBody: true,
+      cors: {
+        ...(!process.env.NOT_SECURED ? { credentials: true } : {}),
+        allowedHeaders: [
+          'Content-Type',
+          'Authorization',
+          'x-copilotkit-runtime-client-gql-version',
+        ],
+        exposedHeaders: [
+          'reload',
+          'onboarding',
+          'activate',
+          'x-copilotkit-runtime-client-gql-version',
+          ...(process.env.NOT_SECURED ? ['auth', 'showorg', 'impersonate'] : []),
+        ],
+        origin: [
+          process.env.FRONTEND_URL,
+          'http://localhost:6274',
+          ...(process.env.MAIN_URL ? [process.env.MAIN_URL] : []),
+        ],
+      },
+    }),
+    BACKEND_STARTUP_TIMEOUT_MS
+  );
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -90,14 +94,45 @@ async function start() {
 
   const port = process.env.PORT || 3000;
 
+  Logger.log(`Starting backend HTTP listener on port ${port}`, 'Bootstrap');
+  await withStartupTimeout(
+    'Backend HTTP listener startup',
+    app.listen(port),
+    BACKEND_STARTUP_TIMEOUT_MS
+  );
+
+  checkConfiguration(); // Do this last, so that users will see obvious issues at the end of the startup log without having to scroll up.
+
+  Logger.log(`🚀 Backend is running on: http://localhost:${port}`);
+  void startMcpAfterListen(app);
+}
+
+async function startMcpAfterListen(app: INestApplication) {
+  // MCP/Mastra startup has previously hung during deployment. Keep it off the
+  // critical HTTP readiness path; the copilot routes can still initialize it
+  // lazily on request if this background startup times out.
+  const mcpPromise = (async () => {
+    const { startMcp } = await import(
+      '@gitroom/nestjs-libraries/chat/start.mcp'
+    );
+    await startMcp(app);
+  })();
+
   try {
-    await app.listen(port);
-
-    checkConfiguration(); // Do this last, so that users will see obvious issues at the end of the startup log without having to scroll up.
-
-    Logger.log(`🚀 Backend is running on: http://localhost:${port}`);
+    await withStartupTimeout(
+      'MCP startup',
+      mcpPromise,
+      MCP_STARTUP_TIMEOUT_MS
+    );
+    Logger.log('MCP endpoint initialized', 'MCP');
   } catch (e) {
-    Logger.error(`Backend failed to start on port ${port}`, e);
+    Logger.warn(
+      `MCP startup failed or timed out; backend will continue. The /mcp/:id endpoint will be unavailable until initialization succeeds. Reason: ${
+        (e as Error)?.message ?? e
+      }`,
+      'MCP'
+    );
+    mcpPromise.catch(() => undefined);
   }
 }
 
@@ -117,4 +152,7 @@ function checkConfiguration() {
   }
 }
 
-start();
+start().catch((e) => {
+  Logger.error('Backend startup failed', e, 'Bootstrap');
+  process.exit(1);
+});

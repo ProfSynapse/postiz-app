@@ -1,8 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Agent } from '@mastra/core/agent';
 import { openai } from '@ai-sdk/openai';
-import { Memory } from '@mastra/memory';
-import { pStore } from '@gitroom/nestjs-libraries/chat/mastra.store';
 import { array, object, string } from 'zod';
 import { ModuleRef } from '@nestjs/core';
 import { toolList } from '@gitroom/nestjs-libraries/chat/tools/tool.list';
@@ -42,6 +39,12 @@ export class LoadToolsService {
 
   async agent() {
     const tools = await this.loadTools();
+    const [{ Agent }, { Memory }, { getMastraStore }] = await Promise.all([
+      import('@mastra/core/agent'),
+      import('@mastra/memory'),
+      import('@gitroom/nestjs-libraries/chat/mastra.store'),
+    ]);
+
     return new Agent({
       name: 'postiz',
       description: 'Agent that helps manage and schedule social media posts for users',
@@ -88,7 +91,7 @@ export class LoadToolsService {
       model: openai('gpt-4.1'),
       tools,
       memory: new Memory({
-        storage: pStore,
+        storage: getMastraStore(),
         options: {
           threads: {
             generateTitle: true,

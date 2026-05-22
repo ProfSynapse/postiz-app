@@ -39,6 +39,9 @@ export class CheckMissingQueues {
           id: job.id,
           delay: dayjs(job.publishDate).diff(dayjs(), 'millisecond'),
         },
+      }).subscribe({
+        error: (err) =>
+          console.warn(`Failed to enqueue missing post ${job.id}`, err),
       });
     }
   }
