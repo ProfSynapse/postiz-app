@@ -103,6 +103,16 @@ export class PublicIntegrationsController {
     return { date: await this._postsService.findFreeDateTime(org.id, id) };
   }
 
+  @Get('/analytics/:integration')
+  async getIntegrationAnalytics(
+    @GetOrgFromRequest() org: Organization,
+    @Param('integration') integration: string,
+    @Query('date') date = '30'
+  ) {
+    Sentry.metrics.count("public_api-request", 1);
+    return this._integrationService.checkAnalytics(org, integration, date);
+  }
+
   @Get('/posts')
   async getPosts(
     @GetOrgFromRequest() org: Organization,
@@ -114,6 +124,15 @@ export class PublicIntegrationsController {
       posts,
       // comments,
     };
+  }
+
+  @Get('/posts/:id/statistics')
+  async getPostStatistics(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    Sentry.metrics.count("public_api-request", 1);
+    return this._postsService.getStatistics(org.id, id);
   }
 
   @Post('/posts')
