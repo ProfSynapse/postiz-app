@@ -1,8 +1,6 @@
 import { CustomTransportStrategy, Server } from '@nestjs/microservices';
-import { ConnectionOptions, Queue, Worker } from 'bullmq';
+import { Queue, Worker } from 'bullmq';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
-
-const bullMqConnection = ioRedis as unknown as ConnectionOptions;
 
 export class BullMqServer extends Server implements CustomTransportStrategy {
   queues: Map<string, Queue>;
@@ -14,7 +12,7 @@ export class BullMqServer extends Server implements CustomTransportStrategy {
    */
   listen(callback: () => void) {
     this.queues = [...this.messageHandlers.keys()].reduce((all, pattern) => {
-      all.set(pattern, new Queue(pattern, { connection: bullMqConnection }));
+      all.set(pattern, new Queue(pattern, { connection: ioRedis }));
       return all;
     }, new Map());
 
@@ -38,7 +36,7 @@ export class BullMqServer extends Server implements CustomTransportStrategy {
           {
             maxStalledCount: 10,
             concurrency: 300,
-            connection: bullMqConnection,
+            connection: ioRedis,
             removeOnComplete: {
               count: 0,
             },

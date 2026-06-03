@@ -1,10 +1,8 @@
 import { ClientProxy, ReadPacket, WritePacket } from '@nestjs/microservices';
-import { ConnectionOptions, Queue, QueueEvents } from 'bullmq';
+import { Queue, QueueEvents } from 'bullmq';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 import { v4 } from 'uuid';
 import { Injectable } from '@nestjs/common';
-
-const bullMqConnection = ioRedis as unknown as ConnectionOptions;
 
 @Injectable()
 export class BullMqClient extends ClientProxy {
@@ -62,29 +60,21 @@ export class BullMqClient extends ClientProxy {
   }
 
   getQueueEvents(pattern: string) {
-    const existing = this.queueEvents.get(pattern);
-    if (existing) {
-      return existing;
-    }
-
-    const queueEvents = new QueueEvents(pattern, {
-      connection: bullMqConnection,
-    });
-    this.queueEvents.set(pattern, queueEvents);
-    return queueEvents;
+    return (
+      this.queueEvents.get(pattern) ||
+      new QueueEvents(pattern, {
+        connection: ioRedis,
+      })
+    );
   }
 
   getQueue(pattern: string) {
-    const existing = this.queues.get(pattern);
-    if (existing) {
-      return existing;
-    }
-
-    const queue = new Queue(pattern, {
-      connection: bullMqConnection,
-    });
-    this.queues.set(pattern, queue);
-    return queue;
+    return (
+      this.queues.get(pattern) ||
+      new Queue(pattern, {
+        connection: ioRedis,
+      })
+    );
   }
 
   async checkForStuckWaitingJobs(queueName: string) {
