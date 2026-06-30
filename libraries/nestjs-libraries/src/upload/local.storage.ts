@@ -11,7 +11,15 @@ export class LocalStorage implements IUploadProvider {
   constructor(private uploadDirectory: string) {}
 
   async uploadSimple(path: string) {
-    const loadImage = await axios.get(path, { responseType: 'arraybuffer' });
+    const loadImage = await axios.get(path, {
+      responseType: 'arraybuffer',
+      // Some image CDNs (e.g. LinkedIn's media.licdn.com) return 403 for
+      // requests without a browser-like User-Agent.
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (compatible; Postiz/1.0; +https://postiz.com)',
+      },
+    });
     const contentType =
       loadImage?.headers?.['content-type'] ||
       loadImage?.headers?.['Content-Type'];
