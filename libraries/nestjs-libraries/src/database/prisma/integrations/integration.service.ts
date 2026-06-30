@@ -106,7 +106,16 @@ export class IntegrationService {
     const uploadedPicture = picture
       ? picture?.indexOf('imagedelivery.net') > -1
         ? picture
-        : await this.storage.uploadSimple(picture)
+        : // Re-hosting the avatar must never block connecting a channel.
+          // Some providers (e.g. LinkedIn) serve avatar URLs that 403 on a
+          // server-side fetch; fall back to no picture instead of failing.
+          await this.storage.uploadSimple(picture).catch((err) => {
+            console.warn(
+              'Failed to re-host integration picture, continuing without it:',
+              err?.message || err
+            );
+            return undefined;
+          })
       : undefined;
 
     return this._integrationRepository.createOrUpdateIntegration(
