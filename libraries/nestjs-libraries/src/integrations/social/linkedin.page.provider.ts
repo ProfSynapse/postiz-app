@@ -112,7 +112,7 @@ export class LinkedinPageProvider
   override async generateAuthUrl() {
     const state = makeId(6);
     const codeVerifier = makeId(30);
-    const url = `https://www.linkedin.com/oauth/v2/authorization?response_type=code&prompt=none&client_id=${
+    const url = `https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=${
       process.env.LINKEDIN_PAGE_CLIENT_ID || process.env.LINKEDIN_CLIENT_ID
     }&redirect_uri=${encodeURIComponent(
       `${process.env.FRONTEND_URL}/integrations/social/linkedin-page`
@@ -206,12 +206,7 @@ export class LinkedinPageProvider
     body.append('client_id', (process.env.LINKEDIN_PAGE_CLIENT_ID || process.env.LINKEDIN_CLIENT_ID)!);
     body.append('client_secret', (process.env.LINKEDIN_PAGE_CLIENT_SECRET || process.env.LINKEDIN_CLIENT_SECRET)!);
 
-    const {
-      access_token: accessToken,
-      expires_in: expiresIn,
-      refresh_token: refreshToken,
-      scope,
-    } = await (
+    const tokenResponse = await (
       await fetch('https://www.linkedin.com/oauth/v2/accessToken', {
         method: 'POST',
         headers: {
@@ -221,7 +216,36 @@ export class LinkedinPageProvider
       })
     ).json();
 
-    this.checkScopes(this.scopes, scope);
+    const {
+      access_token: accessToken,
+      expires_in: expiresIn,
+      refresh_token: refreshToken,
+      scope,
+    } = tokenResponse;
+
+    console.log('[linkedin-page] token response', {
+      hasAccessToken: !!accessToken,
+      scope,
+      error: tokenResponse.error,
+      error_description: tokenResponse.error_description,
+    });
+
+    // LinkedIn frequently omits some granted scopes from the token-response
+    // echo (notably openid/profile), which made the strict checkScopes()
+    // throw NotEnoughScopes even though the token is fully usable. Log any
+    // scopes LinkedIn did not echo back, but do not block the connection.
+    const grantedScopes = (typeof scope === 'string' ? scope : '')
+      .split(/[\s,]+/)
+      .filter(Boolean);
+    const missingScopes = this.scopes.filter(
+      (s) => !grantedScopes.includes(s)
+    );
+    if (missingScopes.length) {
+      console.warn(
+        '[linkedin-page] scopes not echoed by LinkedIn (continuing anyway):',
+        missingScopes
+      );
+    }
 
     const {
       name,
