@@ -304,6 +304,7 @@ export class IntegrationRepository {
         },
         inBetweenSteps: false,
         deletedAt: null,
+        disabled: false,
         refreshNeeded: false,
       },
     });

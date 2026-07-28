@@ -192,10 +192,11 @@ export class IntegrationService {
     integration: Integration,
     err = ''
   ) {
+    const details = err ? ` (${err})` : '';
     await this._notificationService.inAppNotification(
       orgId,
-      `Could not refresh your ${integration.providerIdentifier} channel ${err}`,
-      `Could not refresh your ${integration.providerIdentifier} channel ${err}. Please go back to the system and connect it again ${process.env.FRONTEND_URL}/launches`,
+      `Reconnect ${integration.name} in Postiz`,
+      `Postiz could not refresh the ${integration.providerIdentifier} connection for ${integration.name}${details}. Scheduled posts may not publish until you reconnect it: ${process.env.FRONTEND_URL}/launches`,
       true,
       false,
       'info'
@@ -224,7 +225,7 @@ export class IntegrationService {
           integration.organizationId,
           integration.id
         );
-        return;
+        continue;
       }
 
       const { refreshToken, accessToken, expiresIn } = data;

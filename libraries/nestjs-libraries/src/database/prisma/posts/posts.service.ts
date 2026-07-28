@@ -318,7 +318,7 @@ export class PostsService {
         firstPost.organizationId,
         `We couldn't post to ${firstPost.integration?.providerIdentifier} for ${firstPost?.integration?.name}`,
         `We couldn't post to ${firstPost.integration?.providerIdentifier} for ${firstPost?.integration?.name} because you need to reconnect it. Please enable it and try again.`,
-        true,
+        false,
         false,
         'info'
       );
@@ -355,7 +355,12 @@ export class PostsService {
         });
       }
 
-      if (!finalPost?.postId || !finalPost?.releaseURL) {
+      if (!finalPost) {
+        await this._postRepository.changeState(firstPost.id, 'ERROR');
+        return;
+      }
+
+      if (!finalPost.postId || !finalPost.releaseURL) {
         await this._postRepository.changeState(firstPost.id, 'ERROR');
         await this._notificationService.inAppNotification(
           firstPost.organizationId,
