@@ -45,12 +45,18 @@ export const ContinueIntegration: FC<{
 
       if (data.status === HttpStatusCode.PreconditionFailed) {
         push(`/launches?precondition=true`);
-        return ;
+        return;
       }
 
       if (data.status === HttpStatusCode.NotAcceptable) {
         const { msg } = await data.json();
-        push(`/launches?msg=${msg}`);
+        push(`/launches?msg=${encodeURIComponent(msg)}`);
+        return;
+      }
+
+      if (data.status === HttpStatusCode.Conflict) {
+        const { msg } = await data.json();
+        push(`/launches?msg=${encodeURIComponent(msg)}`);
         return;
       }
 

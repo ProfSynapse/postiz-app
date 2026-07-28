@@ -1,4 +1,10 @@
-import { forwardRef, HttpException, HttpStatus, Inject, Injectable } from '@nestjs/common';
+import {
+  forwardRef,
+  HttpException,
+  HttpStatus,
+  Inject,
+  Injectable,
+} from '@nestjs/common';
 import { IntegrationRepository } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.repository';
 import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
 import {
@@ -148,6 +154,14 @@ export class IntegrationService {
 
   getIntegrationsList(org: string) {
     return this._integrationRepository.getIntegrationsList(org);
+  }
+
+  migrateIntegrationIdentity(org: string, fromId: string, toId: string) {
+    return this._integrationRepository.migrateIntegrationIdentity(
+      org,
+      fromId,
+      toId
+    );
   }
 
   getIntegrationForOrder(id: string, order: string, user: string, org: string) {

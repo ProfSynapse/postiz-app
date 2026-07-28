@@ -39,6 +39,7 @@ import {
 } from '@gitroom/backend/services/auth/permissions/permission.exception.class';
 import { uniqBy } from 'lodash';
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
+import { resolveLinkedInReconnectId } from '@gitroom/nestjs-libraries/integrations/social/linkedin.reconnect';
 
 @ApiTags('Integrations')
 @Controller('/integrations')
@@ -462,11 +463,18 @@ export class IntegrationsController {
       throw new NotEnoughScopes('Invalid API key');
     }
 
-    if (refresh && String(id) !== String(refresh)) {
-      throw new NotEnoughScopes(
-        'Please refresh the channel that needs to be refreshed'
-      );
-    }
+    const existingRefreshIntegration = refresh
+      ? (await this._integrationService.getIntegrationsList(org.id)).find(
+          (item) => item.internalId === refresh
+        )
+      : undefined;
+    const channelId = resolveLinkedInReconnectId(
+      integration,
+      String(id),
+      name,
+      refresh,
+      existingRefreshIntegration
+    );
 
     let validName = name;
     if (!validName) {
@@ -482,10 +490,18 @@ export class IntegrationsController {
       org.isTrailing &&
       (await this._integrationService.checkPreviousConnections(
         org.id,
-        String(id)
+        channelId
       ))
     ) {
       throw new HttpException('', 412);
+    }
+
+    if (refresh && channelId !== refresh) {
+      await this._integrationService.migrateIntegrationIdentity(
+        org.id,
+        refresh,
+        channelId
+      );
     }
 
     return this._integrationService.createOrUpdateIntegration(
@@ -495,7 +511,7 @@ export class IntegrationsController {
       validName.trim(),
       picture,
       'social',
-      String(id),
+      channelId,
       integration,
       accessToken,
       refreshToken,
