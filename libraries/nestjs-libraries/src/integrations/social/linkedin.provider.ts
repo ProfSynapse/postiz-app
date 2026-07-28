@@ -39,16 +39,48 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
   // to connect a personal LinkedIn profile using only the
   // "Sign In with LinkedIn using OpenID Connect" + "Share on LinkedIn"
   // products (both instant approval).
-  scopes = [
-    'openid',
-    'profile',
-    'w_member_social',
-  ];
+  scopes = ['openid', 'profile', 'w_member_social'];
   override maxConcurrentJob = 2; // LinkedIn has professional posting limits
   refreshWait = true;
   editor = 'normal' as const;
   maxLength() {
     return 3000;
+  }
+
+  private async authenticatedProfile(accessToken: string) {
+    const userInfoResponse = await fetch(
+      'https://api.linkedin.com/v2/userinfo',
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      }
+    );
+    const { name, sub: openIdSub, picture } = await userInfoResponse.json();
+
+    // Existing Postiz connections used LinkedIn's Person ID as the posting
+    // identity. OIDC's pairwise `sub` can differ from that legacy ID, so ask
+    // the Profile API for the Person ID and prefer it when LinkedIn exposes it.
+    const personResponse = await fetch('https://api.linkedin.com/v2/me', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'X-RestLi-Protocol-Version': '2.0.0',
+      },
+    });
+    const person = personResponse.ok ? await personResponse.json() : {};
+
+    console.log('[linkedin] authenticated profile', {
+      hasOpenIdSub: !!openIdSub,
+      hasPersonId: !!person?.id,
+      personProfileStatus: personResponse.status,
+    });
+
+    return {
+      id: person?.id || openIdSub,
+      name,
+      picture,
+      username: person?.vanityName,
+    };
   }
 
   public override handleErrors(body: string):
@@ -57,7 +89,6 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
         value: string;
       }
     | undefined {
-
     return undefined;
   }
   async refreshToken(refresh_token: string): Promise<AuthTokenDetails> {
@@ -80,25 +111,9 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
       })
     ).json();
 
-    const { vanityName } = await (
-      await fetch('https://api.linkedin.com/v2/me', {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      })
-    ).json();
-
-    const {
-      name,
-      sub: id,
-      picture,
-    } = await (
-      await fetch('https://api.linkedin.com/v2/userinfo', {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      })
-    ).json();
+    const { id, name, picture, username } = await this.authenticatedProfile(
+      accessToken
+    );
 
     return {
       id,
@@ -107,7 +122,7 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
       expiresIn: expires_in,
       name,
       picture: picture || '',
-      username: vanityName,
+      username,
     };
   }
 
@@ -174,9 +189,7 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
     const grantedScopes = (typeof scope === 'string' ? scope : '')
       .split(/[\s,]+/)
       .filter(Boolean);
-    const missingScopes = this.scopes.filter(
-      (s) => !grantedScopes.includes(s)
-    );
+    const missingScopes = this.scopes.filter((s) => !grantedScopes.includes(s));
     if (missingScopes.length) {
       console.warn(
         '[linkedin] scopes not echoed by LinkedIn (continuing anyway):',
@@ -184,25 +197,9 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
       );
     }
 
-    const {
-      name,
-      sub: id,
-      picture,
-    } = await (
-      await fetch('https://api.linkedin.com/v2/userinfo', {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      })
-    ).json();
-
-    const { vanityName } = await (
-      await fetch('https://api.linkedin.com/v2/me', {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      })
-    ).json();
+    const { id, name, picture, username } = await this.authenticatedProfile(
+      accessToken
+    );
 
     return {
       id,
@@ -211,7 +208,7 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
       expiresIn,
       name,
       picture,
-      username: vanityName,
+      username,
     };
   }
 

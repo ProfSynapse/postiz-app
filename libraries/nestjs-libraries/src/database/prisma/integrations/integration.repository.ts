@@ -455,6 +455,21 @@ export class IntegrationRepository {
     });
   }
 
+  migrateIntegrationIdentity(org: string, fromId: string, toId: string) {
+    return this._integration.model.integration.update({
+      where: {
+        organizationId_internalId: {
+          organizationId: org,
+          internalId: fromId,
+        },
+      },
+      data: {
+        internalId: toId,
+        rootInternalId: toId.split('_').pop(),
+      },
+    });
+  }
+
   async disableChannel(org: string, id: string) {
     await this._integration.model.integration.update({
       where: {
