@@ -11,6 +11,7 @@ import { MediaJanitorService } from '@gitroom/nestjs-libraries/database/prisma/m
 import { MediaJanitorRepository } from '@gitroom/nestjs-libraries/database/prisma/media/media.janitor.repository';
 import { MediaPathResolver } from '@gitroom/nestjs-libraries/upload/media.path.resolver';
 import { ClockService } from '@gitroom/nestjs-libraries/services/clock.service';
+import { RefreshIntegrationTokens } from '@gitroom/cron/tasks/refresh.integration.tokens';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { ClockService } from '@gitroom/nestjs-libraries/services/clock.service';
     MediaJanitorRepository,
     MediaPathResolver,
     ClockService,
+    RefreshIntegrationTokens,
   ],
 })
 export class CronModule {}
