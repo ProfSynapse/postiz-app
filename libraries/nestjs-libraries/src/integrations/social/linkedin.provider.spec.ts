@@ -5,6 +5,12 @@ jest.mock('@gitroom/helpers/utils/concurrency.service', () => ({
 
 import { LinkedinProvider } from './linkedin.provider';
 
+class TestableLinkedinProvider extends LinkedinProvider {
+  formatText(text: string) {
+    return this.fixText(text);
+  }
+}
+
 type FetchMock = jest.Mock<
   Promise<Response>,
   [RequestInfo | URL, RequestInit?]
@@ -101,5 +107,49 @@ describe('LinkedinProvider authentication identity', () => {
     });
 
     expect(result.id).toBe('oidc-subject');
+  });
+});
+
+describe('LinkedinProvider mention formatting', () => {
+  const provider = new TestableLinkedinProvider();
+
+  it('preserves organization mention tokens', () => {
+    const mention = '@[Synaptic Labs](urn:li:organization:123456)';
+
+    expect(provider.formatText('Hello ' + mention)).toBe('Hello ' + mention);
+  });
+
+  it('preserves person mention tokens', () => {
+    const mention =
+      '@[Laurie](urn:li:person:ACoAAAcTm18BC-lN0wBZr5RgbtIdo7rk-RwMRjw)';
+
+    expect(provider.formatText('Building with ' + mention + ' #AI')).toBe(
+      'Building with ' + mention + ' \\#AI'
+    );
+  });
+
+  it('continues to escape ordinary LinkedIn text', () => {
+    expect(provider.formatText('Hello @someone [link](https://example.com)')).toBe(
+      'Hello \\@someone \\[link\\]\\(https://example.com\\)'
+    );
+  });
+
+  it('does not preserve member or mini-profile URNs as mentions', () => {
+    expect(
+      provider.formatText('@[Laurie](urn:li:member:118725471)')
+    ).toBe('\\@\\[Laurie\\]\\(urn:li:member:118725471\\)');
+    expect(
+      provider.formatText(
+        '@[Laurie](urn:li:fs_miniProfile:ACoAAAcTm18BC-lN0wBZr5RgbtIdo7rk-RwMRjw)'
+      )
+    ).toBe(
+      '\\@\\[Laurie\\]\\(urn:li:fs\\_miniProfile:ACoAAAcTm18BC-lN0wBZr5RgbtIdo7rk-RwMRjw\\)'
+    );
+  });
+
+  it('escapes malformed person mention tokens', () => {
+    expect(provider.formatText('@[Laurie](urn:li:person:)')).toBe(
+      '\\@\\[Laurie\\]\\(urn:li:person:\\)'
+    );
   });
 });
