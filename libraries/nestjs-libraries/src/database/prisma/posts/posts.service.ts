@@ -24,7 +24,11 @@ import {
 } from '@gitroom/nestjs-libraries/integrations/social.abstract';
 import { BullMqClient } from '@gitroom/nestjs-libraries/bull-mq-transport-new/client';
 import { timer } from '@gitroom/helpers/utils/timer';
-import { AuthTokenDetails } from '@gitroom/nestjs-libraries/integrations/social/social.integrations.interface';
+import {
+  AuthTokenDetails,
+  PostResponse,
+} from '@gitroom/nestjs-libraries/integrations/social/social.integrations.interface';
+import { LinkedInPartialPublicationError } from '@gitroom/nestjs-libraries/integrations/social/linkedin.publication';
 import utc from 'dayjs/plugin/utc';
 import { MediaService } from '@gitroom/nestjs-libraries/database/prisma/media/media.service';
 import { ShortLinkService } from '@gitroom/nestjs-libraries/short-linking/short.link.service';
@@ -458,6 +462,22 @@ export class PostsService {
     }
 
     const newPosts = await this.updateTags(integration.organizationId, posts);
+    const checkpointLinkedIn = ['linkedin', 'linkedin-page'].includes(
+      integration.providerIdentifier
+    );
+    const persistPublished = async (result: PostResponse) => {
+      await this._postRepository.updatePost(
+        result.id,
+        result.postId,
+        result.releaseURL
+      );
+      const original = posts.find((post) => post.id === result.id);
+      if (original) {
+        original.releaseId = result.postId;
+        original.releaseURL = result.releaseURL;
+        original.state = 'PUBLISHED';
+      }
+    };
 
     try {
       const publishedPosts = await getIntegration.post(
@@ -466,6 +486,20 @@ export class PostsService {
         await Promise.all(
           (newPosts || []).map(async (p) => ({
             id: p.id,
+            ...(checkpointLinkedIn
+              ? {
+                  published:
+                    !posts[0].intervalInDays && p.releaseId && p.releaseURL
+                      ? {
+                          id: p.id,
+                          postId: p.releaseId,
+                          releaseURL: p.releaseURL,
+                          status: 'posted',
+                        }
+                      : undefined,
+                  onPublished: persistPublished,
+                }
+              : {}),
             message: stripHtmlValidation(
               getIntegration.editor,
               p.content,
@@ -533,6 +567,38 @@ export class PostsService {
         releaseURL: publishedPosts[0].releaseURL,
       };
     } catch (err) {
+      if (err instanceof LinkedInPartialPublicationError) {
+        // The provider already created the main post. Preserve it even when a
+        // comment gets a permanent error or its readiness retries expire.
+        for (const result of err.publishedPosts) await persistPublished(result);
+        const main = err.publishedPosts[0];
+        try {
+          const completed = new Set(
+            err.publishedPosts.map((result) => result.id)
+          );
+          for (const post of posts.filter((post) => !completed.has(post.id))) {
+            await this._postRepository.changeState(post.id, 'ERROR', {
+              message:
+                'Main LinkedIn post published; comment was not completed. Verify before retrying.',
+              cause: err.cause instanceof Error ? err.cause.message : err.cause,
+            });
+          }
+          await this._notificationService.inAppNotification(
+            integration.organizationId,
+            'LinkedIn post published; follow-up needs attention',
+            `Your post is published at ${main.releaseURL}. A comment or delivery checkpoint failed. Check the existing post before retrying; do not republish it.`,
+            true,
+            false,
+            'fail'
+          );
+        } catch (reportError) {
+          this.logger.error(
+            'LinkedIn follow-up failure could not be recorded or notified',
+            reportError
+          );
+        }
+        return { postId: main.postId, releaseURL: main.releaseURL };
+      }
       if (err instanceof RefreshToken) {
         return this.postSocial(integration, posts, true);
       }

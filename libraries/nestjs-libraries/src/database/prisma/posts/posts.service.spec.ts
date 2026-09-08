@@ -200,3 +200,138 @@ describe('PostsService queue side effects', () => {
     expect(notificationService.inAppNotification).not.toHaveBeenCalled();
   });
 });
+
+// Publication checkpoints must survive a follow-up failure for both providers.
+import { LinkedInPartialPublicationError } from '../../../integrations/social/linkedin.publication';
+
+describe('PostsService LinkedIn partial publication', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it.each(['linkedin', 'linkedin-page'])(
+    'keeps the %s main post published when its comment fails',
+    async (providerIdentifier) => {
+      const { service, postRepository, notificationService } = buildService();
+      const result = {
+        id: 'main',
+        postId: 'urn:li:ugcPost:123',
+        releaseURL: 'https://www.linkedin.com/feed/update/urn:li:ugcPost:123',
+        status: 'posted',
+      };
+      const integration = {
+        internalId: 'actor',
+        token: 'token',
+        tokenExpiration: dayjs().add(1, 'day').toDate(),
+        providerIdentifier,
+        organizationId: 'org',
+      };
+      const posts = [
+        {
+          id: 'main',
+          organizationId: 'org',
+          integration,
+          content: 'Video',
+          settings: '{}',
+          image: '[]',
+        },
+        {
+          id: 'comment',
+          organizationId: 'org',
+          content: 'Link',
+          settings: '{}',
+          image: '[]',
+        },
+      ];
+      const updatePost = jest.fn(async () => {});
+      (postRepository as any).updatePost = updatePost;
+      (service as any)._integrationManager = {
+        getSocialIntegration: () => ({
+          editor: 'normal',
+          post: jest.fn(async (_id, _token, details) => {
+            await details[0].onPublished(result);
+            expect(updatePost).toHaveBeenCalledWith(
+              'main',
+              result.postId,
+              result.releaseURL
+            );
+            throw new LinkedInPartialPublicationError(
+              [result],
+              'comment',
+              new Error('comment rejected')
+            );
+          }),
+        }),
+      };
+      jest
+        .spyOn(service, 'getPostsRecursively')
+        .mockResolvedValue(posts as any);
+      jest.spyOn(service as any, 'updateTags').mockResolvedValue(posts);
+      jest.spyOn(service, 'updateMedia').mockResolvedValue([]);
+      await service.post('main');
+      expect(postRepository.changeState).toHaveBeenCalledWith(
+        'comment',
+        'ERROR',
+        expect.anything()
+      );
+      expect(
+        postRepository.changeState.mock.calls.some(([id]) => id === 'main')
+      ).toBe(false);
+      expect(notificationService.inAppNotification).toHaveBeenCalledWith(
+        'org',
+        'LinkedIn post published; follow-up needs attention',
+        expect.stringContaining(result.releaseURL),
+        true,
+        false,
+        'fail'
+      );
+    }
+  );
+
+  it('does not turn a published main post into ERROR when the warning notification fails', async () => {
+    const { service, postRepository } = buildService({
+      notificationService: {
+        inAppNotification: jest.fn().mockRejectedValue(new Error('mail down')),
+      },
+    });
+    const result = {
+      id: 'main',
+      postId: 'urn:li:share:123',
+      releaseURL: 'https://www.linkedin.com/feed/update/urn:li:share:123',
+      status: 'posted',
+    };
+    const posts = [
+      {
+        id: 'main',
+        organizationId: 'org',
+        integration: {
+          providerIdentifier: 'linkedin',
+          tokenExpiration: dayjs().add(1, 'day').toDate(),
+        },
+        content: 'Post',
+        settings: '{}',
+        image: '[]',
+      },
+      { id: 'comment', content: 'Link', settings: '{}', image: '[]' },
+    ];
+    (postRepository as any).updatePost = jest.fn();
+    (service as any)._integrationManager = {
+      getSocialIntegration: () => ({
+        editor: 'normal',
+        post: async () => {
+          throw new LinkedInPartialPublicationError(
+            [result],
+            'comment',
+            new Error('404')
+          );
+        },
+      }),
+    };
+    jest.spyOn(service, 'getPostsRecursively').mockResolvedValue(posts as any);
+    jest.spyOn(service as any, 'updateTags').mockResolvedValue(posts);
+    jest.spyOn(service, 'updateMedia').mockResolvedValue([]);
+    jest.spyOn((service as any).logger, 'error').mockImplementation(() => {});
+    await service.post('main');
+    expect(
+      postRepository.changeState.mock.calls.some(([id]) => id === 'main')
+    ).toBe(false);
+  });
+});

@@ -129,15 +129,15 @@ describe('LinkedinProvider mention formatting', () => {
   });
 
   it('continues to escape ordinary LinkedIn text', () => {
-    expect(provider.formatText('Hello @someone [link](https://example.com)')).toBe(
-      'Hello \\@someone \\[link\\]\\(https://example.com\\)'
-    );
+    expect(
+      provider.formatText('Hello @someone [link](https://example.com)')
+    ).toBe('Hello \\@someone \\[link\\]\\(https://example.com\\)');
   });
 
   it('does not preserve member or mini-profile URNs as mentions', () => {
-    expect(
-      provider.formatText('@[Laurie](urn:li:member:118725471)')
-    ).toBe('\\@\\[Laurie\\]\\(urn:li:member:118725471\\)');
+    expect(provider.formatText('@[Laurie](urn:li:member:118725471)')).toBe(
+      '\\@\\[Laurie\\]\\(urn:li:member:118725471\\)'
+    );
     expect(
       provider.formatText(
         '@[Laurie](urn:li:fs_miniProfile:ACoAAAcTm18BC-lN0wBZr5RgbtIdo7rk-RwMRjw)'
@@ -150,6 +150,133 @@ describe('LinkedinProvider mention formatting', () => {
   it('escapes malformed person mention tokens', () => {
     expect(provider.formatText('@[Laurie](urn:li:person:)')).toBe(
       '\\@\\[Laurie\\]\\(urn:li:person:\\)'
+    );
+  });
+});
+
+describe('LinkedIn video readiness and comment identity', () => {
+  const provider = new LinkedinProvider();
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  it('waits for PROCESSING to become AVAILABLE', async () => {
+    jest.useFakeTimers();
+    const fetch = jest
+      .spyOn(provider, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ status: 'PROCESSING' }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'AVAILABLE' }));
+    const waiting = (provider as any).waitForVideo('urn:li:video:123', 'token');
+    await jest.advanceTimersByTimeAsync(10000);
+    await waiting;
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls[0][0]).toContain('urn%3Ali%3Avideo%3A123');
+  });
+
+  it('fails before posting when video processing fails', async () => {
+    jest.spyOn(provider, 'fetch').mockResolvedValue(
+      jsonResponse({
+        status: 'PROCESSING_FAILED',
+        processingFailureReason: 'invalid video',
+      })
+    );
+    await expect(
+      (provider as any).waitForVideo('urn:li:video:123', 'token')
+    ).rejects.toThrow('invalid video');
+  });
+
+  it('times out a video that never becomes ready', async () => {
+    jest.useFakeTimers();
+    const fetch = jest
+      .spyOn(provider, 'fetch')
+      .mockImplementation(async () => jsonResponse({ status: 'PROCESSING' }));
+    const waiting = expect(
+      (provider as any).waitForVideo('urn:li:video:123', 'token')
+    ).rejects.toThrow('no post was created');
+    await jest.advanceTimersByTimeAsync(300000);
+    await waiting;
+    expect(fetch).toHaveBeenCalledTimes(31);
+  });
+
+  it.each(['personal', 'company'])(
+    'uses the %s actor and records the comment identity',
+    async (type) => {
+      const fetch = jest
+        .spyOn(provider, 'fetch')
+        .mockResolvedValue(
+          jsonResponse({ object: 'urn:li:activity:123', id: '456' }, 201)
+        );
+      const result = await (provider as any).createCommentPost(
+        'actor',
+        'token',
+        { message: 'Approved link' },
+        'urn:li:ugcPost:123',
+        type
+      );
+      expect(result).toBe('urn:li:comment:(urn:li:activity:123,456)');
+      const body = JSON.parse(fetch.mock.calls[0][1]!.body as string);
+      expect(body.actor).toBe(
+        type === 'personal'
+          ? 'urn:li:person:actor'
+          : 'urn:li:organization:actor'
+      );
+    }
+  );
+});
+
+describe('LinkedIn thread delivery', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  it('retries a not-yet-visible comment without recreating the accepted main post', async () => {
+    jest.useFakeTimers();
+    const provider = new LinkedinProvider();
+    const mainId = 'urn:li:ugcPost:123';
+    const persisted = jest.fn(async () => {});
+    const fetch = jest
+      .spyOn(provider, 'fetch')
+      .mockResolvedValueOnce(
+        new Response('{}', { status: 201, headers: { 'x-restli-id': mainId } })
+      )
+      .mockRejectedValueOnce({ json: '{"status":404}' })
+      .mockResolvedValueOnce(
+        jsonResponse({ id: '456', object: 'urn:li:activity:123' }, 201)
+      );
+    const result = provider.post(
+      'actor',
+      'token',
+      [
+        {
+          id: 'main',
+          message: 'Video post',
+          settings: {} as any,
+          media: [],
+          onPublished: persisted,
+        },
+        {
+          id: 'comment',
+          message: 'Approved link',
+          settings: {} as any,
+          media: [],
+          onPublished: persisted,
+        },
+      ],
+      {} as any
+    );
+    await jest.advanceTimersByTimeAsync(5000);
+    const published = await result;
+    expect(
+      fetch.mock.calls.filter(([url]) => url.endsWith('/rest/posts'))
+    ).toHaveLength(1);
+    expect(
+      fetch.mock.calls.filter(([url]) => url.endsWith('/comments'))
+    ).toHaveLength(2);
+    expect(persisted.mock.calls[0][0].postId).toBe(mainId);
+    expect(published[1].postId).toBe(
+      'urn:li:comment:(urn:li:activity:123,456)'
     );
   });
 });

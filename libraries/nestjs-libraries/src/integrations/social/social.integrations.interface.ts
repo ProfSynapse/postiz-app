@@ -92,6 +92,9 @@ export type PostDetails<T = any> = {
   settings: T;
   media?: MediaContent[];
   poll?: PollDetails;
+  // Internal delivery checkpoints; never sent to a social network.
+  published?: PostResponse;
+  onPublished?: (result: PostResponse) => Promise<void>;
 };
 
 export type PollDetails = {

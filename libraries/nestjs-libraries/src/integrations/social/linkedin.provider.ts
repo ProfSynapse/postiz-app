@@ -14,6 +14,11 @@ import { PostPlug } from '@gitroom/helpers/decorators/post.plug';
 import { LinkedinDto } from '@gitroom/nestjs-libraries/dtos/posts/providers-settings/linkedin.dto';
 import imageToPDF from 'image-to-pdf';
 import { Readable } from 'stream';
+import { timer } from '@gitroom/helpers/utils/timer';
+import {
+  publishLinkedInThread,
+  retryLinkedInComment,
+} from './linkedin.publication';
 import { Rules } from '@gitroom/nestjs-libraries/chat/rules.description.decorator';
 import {
   getLinkedInVersion,
@@ -354,7 +359,45 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
       );
     }
 
+    if (isVideo) {
+      await this.waitForVideo(video, accessToken);
+    }
     return finalOutput;
+  }
+
+  private async waitForVideo(video: string, accessToken: string) {
+    // Finalizing an upload only starts processing. A post may be accepted while
+    // its video is still unavailable to the comments service.
+    for (let attempt = 0; attempt < 31; attempt++) {
+      const response = await linkedInRetryOn426(async (version) =>
+        this.fetch(
+          `https://api.linkedin.com/rest/videos/${encodeURIComponent(video)}`,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              'LinkedIn-Version': version,
+              'X-Restli-Protocol-Version': '2.0.0',
+            },
+          }
+        )
+      );
+      const result = await response.json();
+      if (result.status === 'AVAILABLE') return;
+      if (result.status === 'PROCESSING_FAILED') {
+        throw new Error(
+          `LinkedIn video processing failed: ${
+            result.processingFailureReason || 'unknown reason'
+          }`
+        );
+      }
+      if (!['PROCESSING', 'WAITING_UPLOAD'].includes(result.status)) {
+        throw new Error(`Unexpected LinkedIn video status: ${result.status}`);
+      }
+      if (attempt < 30) await timer(10000);
+    }
+    throw new Error(
+      'LinkedIn video was not ready after 5 minutes; no post was created'
+    );
   }
 
   protected fixText(text: string) {
@@ -650,45 +693,34 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
     const actor =
       type === 'personal' ? `urn:li:person:${id}` : `urn:li:organization:${id}`;
 
-    const response = await this.fetch(
-      `https://api.linkedin.com/v2/socialActions/${decodeURIComponent(
-        parentPostId
-      )}/comments`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({
-          actor,
-          object: parentPostId,
-          message: {
-            text: this.fixText(post.message),
+    return retryLinkedInComment(async () => {
+      const response = await this.fetch(
+        `https://api.linkedin.com/v2/socialActions/${encodeURIComponent(
+          parentPostId
+        )}/comments`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
           },
-        }),
-      }
-    );
-
-    const { object } = await response.json();
-    return object;
-  }
-
-  private createPostResponse(
-    postId: string,
-    originalPostId: string,
-    isMainPost: boolean = false
-  ): PostResponse {
-    const baseUrl = isMainPost
-      ? 'https://www.linkedin.com/feed/update/'
-      : 'https://www.linkedin.com/embed/feed/update/';
-
-    return {
-      status: 'posted',
-      postId,
-      id: originalPostId,
-      releaseURL: `${baseUrl}${postId}`,
-    };
+          body: JSON.stringify({
+            actor,
+            object: parentPostId,
+            message: { text: this.fixText(post.message) },
+          }),
+        }
+      );
+      const body = await response.json();
+      // `object` is the parent activity, not the new comment's identity.
+      const commentId = body.commentUrn || response.headers.get('x-restli-id');
+      if (commentId?.startsWith('urn:li:comment:')) return commentId;
+      const id = body.id || commentId;
+      if (id && body.object) return `urn:li:comment:(${body.object},${id})`;
+      throw new Error(
+        'LinkedIn accepted the comment without returning a comment ID; verify before retrying'
+      );
+    }, timer);
   }
 
   async post(
@@ -702,18 +734,18 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
     const [firstPost] = postDetails;
 
     // Check if we should convert images to PDF carousel
-    if (firstPost.settings?.post_as_images_carousel) {
+    if (firstPost.settings?.post_as_images_carousel && !firstPost.published) {
       processedPostDetails = await this.convertImagesToPdfCarousel(
         postDetails,
         firstPost
       );
     }
 
-    const [processedFirstPost, ...restPosts] = processedPostDetails;
+    const [processedFirstPost] = processedPostDetails;
 
     // Process and upload media for all posts
     const uploadedMedia = await this.processMediaForPosts(
-      processedPostDetails,
+      processedPostDetails.filter((post) => !post.published),
       accessToken,
       id,
       type
@@ -724,35 +756,20 @@ export class LinkedinProvider extends SocialAbstract implements SocialProvider {
       uploadedMedia[processedFirstPost.id] || []
     ).filter(Boolean);
 
-    // Create the main LinkedIn post
-    const mainPostId = await this.createMainPost(
-      id,
-      accessToken,
-      processedFirstPost,
-      mainPostMediaIds,
-      type,
-      !!firstPost.settings?.post_as_images_carousel
+    return publishLinkedInThread(
+      processedPostDetails,
+      (post) =>
+        this.createMainPost(
+          id,
+          accessToken,
+          post,
+          mainPostMediaIds,
+          type,
+          !!firstPost.settings?.post_as_images_carousel
+        ),
+      (post, parentId) =>
+        this.createCommentPost(id, accessToken, post, parentId, type)
     );
-
-    // Build response array starting with main post
-    const responses: PostResponse[] = [
-      this.createPostResponse(mainPostId, processedFirstPost.id, true),
-    ];
-
-    // Create comment posts for remaining posts
-    for (const post of restPosts) {
-      const commentPostId = await this.createCommentPost(
-        id,
-        accessToken,
-        post,
-        mainPostId,
-        type
-      );
-
-      responses.push(this.createPostResponse(commentPostId, post.id, false));
-    }
-
-    return responses;
   }
 
   @PostPlug({
