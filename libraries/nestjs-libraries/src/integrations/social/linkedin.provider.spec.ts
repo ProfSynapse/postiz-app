@@ -120,11 +120,20 @@ describe('LinkedinProvider mention formatting', () => {
   });
 
   it('preserves person mention tokens', () => {
-    const mention =
-      '@[Laurie](urn:li:person:ACoAAAcTm18BC-lN0wBZr5RgbtIdo7rk-RwMRjw)';
+    const mention = '@[Joseph](urn:li:person:94YtzFQ6hd)';
 
     expect(provider.formatText('Building with ' + mention + ' #AI')).toBe(
       'Building with ' + mention + ' \\#AI'
+    );
+  });
+
+  it('does not preserve web-profile ids relabeled as person URNs', () => {
+    expect(
+      provider.formatText(
+        '@[Laurie](urn:li:person:ACoAAAcTm18BC-lN0wBZr5RgbtIdo7rk-RwMRjw)'
+      )
+    ).toBe(
+      '\\@\\[Laurie\\]\\(urn:li:person:ACoAAAcTm18BC-lN0wBZr5RgbtIdo7rk-RwMRjw\\)'
     );
   });
 
