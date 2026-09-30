@@ -35,6 +35,18 @@ export class MediaRepository {
     });
   }
 
+  getPublicMedia(orgId: string, ids: string[], paths: string[]) {
+    return this._media.model.media.findMany({
+      where: {
+        organizationId: orgId,
+        deletedAt: null,
+        OR: [{ id: { in: ids } }, { path: { in: paths } }],
+      },
+      select: { id: true, name: true, path: true, type: true,
+        thumbnail: true, alt: true },
+    });
+  }
+
   deleteMedia(org: string, id: string) {
     return this._media.model.media.update({
       where: {

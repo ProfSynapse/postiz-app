@@ -16,6 +16,13 @@ dayjs.extend(weekOfYear);
 dayjs.extend(isSameOrAfter);
 dayjs.extend(utc);
 
+const publicPostSelect = {
+  id: true, parentPostId: true, group: true, state: true, publishDate: true,
+  content: true, title: true, description: true, releaseURL: true,
+  image: true, settings: true,
+  integration: { select: { id: true, name: true, providerIdentifier: true } },
+} as const;
+
 @Injectable()
 export class PostsRepository {
   constructor(
@@ -295,6 +302,24 @@ export class PostsRepository {
           : {}),
         childrenPost: true,
       },
+    });
+  }
+
+  // Separate from editor detail reads: no full integration or unscoped children.
+  getPublicPost(orgId: string, id: string) {
+    return this._post.model.post.findFirst({
+      where: { id, organizationId: orgId, deletedAt: null,
+        integration: { organizationId: orgId } },
+      select: publicPostSelect,
+    });
+  }
+
+  getPublicPostChildren(orgId: string, parentId: string, group: string) {
+    return this._post.model.post.findMany({
+      where: { parentPostId: parentId, group, organizationId: orgId,
+        deletedAt: null, integration: { organizationId: orgId } },
+      select: publicPostSelect,
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
     });
   }
 

@@ -135,6 +135,15 @@ export class PublicIntegrationsController {
     return this._postsService.getStatistics(org.id, id);
   }
 
+  @Get('/posts/:id')
+  async getPostDetails(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    Sentry.metrics.count("public_api-request", 1);
+    return this._postsService.getPublicPostDetails(org.id, id);
+  }
+
   @Post('/posts')
   @CheckPolicies([AuthorizationActions.Create, Sections.POSTS_PER_MONTH])
   async createPost(

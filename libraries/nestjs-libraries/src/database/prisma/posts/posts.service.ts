@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   Injectable,
   Logger,
+  NotFoundException,
   ValidationPipe,
 } from '@nestjs/common';
 import { PostsRepository } from '@gitroom/nestjs-libraries/database/prisma/posts/posts.repository';
@@ -45,6 +46,10 @@ import { stripHtmlValidation } from '@gitroom/helpers/utils/strip.html.validatio
 dayjs.extend(utc);
 import * as Sentry from '@sentry/nestjs';
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
+import {
+  PublicPostDetailsDto, parseStoredJson, mediaReferences, mediaReferenceKeys,
+  projectPublicSettings, resolvePublicMedia, publicMediaUrl,
+} from '@gitroom/nestjs-libraries/dtos/posts/public-post-details.dto';
 
 type PostWithConditionals = Post & {
   integration?: Integration;
@@ -177,6 +182,51 @@ export class PostsService {
 
   async getPosts(orgId: string, query: GetPostsDto) {
     return this._postRepository.getPosts(orgId, query);
+  }
+
+  async getPublicPostDetails(orgId: string, id: string): Promise<PublicPostDetailsDto> {
+    const root = await this._postRepository.getPublicPost(orgId, id);
+    if (!root) throw new NotFoundException('Post not found');
+    const posts = [root];
+    const seen = new Set([root.id]);
+    let threadComplete = true;
+    // Scheduled comments/replies are linked posts, not collaboration comments.
+    for (let index = 0; index < posts.length; index++) {
+      const children = await this._postRepository.getPublicPostChildren(orgId, posts[index].id, root.group);
+      for (const child of children) {
+        if (seen.has(child.id) || child.integration.id !== root.integration.id || posts.length >= 100) {
+          threadComplete = false;
+          continue;
+        }
+        seen.add(child.id);
+        posts.push(child);
+      }
+    }
+    const stored = posts.map((post) => ({
+      image: parseStoredJson(post.image, []), settings: parseStoredJson(post.settings, {}),
+    }));
+    const { ids, paths } = mediaReferenceKeys(stored.flatMap(({ image, settings }) => mediaReferences(image, settings)));
+    const media = ids.length || paths.length ? await this._mediaService.getPublicMedia(orgId, ids, paths) : [];
+    return {
+      id: root.id, group: root.group,
+      integration: { id: root.integration.id, name: root.integration.name,
+        providerIdentifier: root.integration.providerIdentifier },
+      threadComplete,
+      posts: posts.map((post, index) => {
+        const { image, settings } = stored[index];
+        const references = Array.isArray(image) ? image : [];
+        const resolved = references.map((reference) => resolvePublicMedia(reference, media));
+        const projected = projectPublicSettings(root.integration.providerIdentifier, settings, media);
+        return {
+          id: post.id, parentPostId: post.parentPostId, state: post.state,
+          publishDate: post.publishDate, content: post.content, title: post.title,
+          description: post.description, releaseURL: publicMediaUrl(post.releaseURL),
+          image: resolved.filter((entry): entry is NonNullable<typeof entry> => !!entry),
+          mediaComplete: Array.isArray(image) && resolved.every((entry) => !!entry?.url),
+          settings: projected.settings, settingsComplete: projected.complete,
+        };
+      }),
+    };
   }
 
   async updateMedia(id: string, imagesList: any[], convertToJPEG = false) {
