@@ -249,6 +249,21 @@ describe('Public post detail HTTP endpoint', () => {
     }
   );
 
+  it('returns a valid YouTube watch URL while keeping media query URLs excluded', async () => {
+    rows[0].integration.providerIdentifier = 'youtube';
+    rows[0].releaseURL = 'https://www.youtube.com/watch?v=aB_cD-12345';
+    rows[0].settings = JSON.stringify({
+      __type: 'youtube',
+      title: 'Approved video',
+      type: 'public',
+    });
+    const response = await get();
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.posts[0].releaseURL).toBe(rows[0].releaseURL);
+    expect(JSON.stringify(body)).not.toMatch(/DO-NOT-RETURN/);
+  });
+
   it('returns exact own post, ordered first comment/reply, attachment and settings', async () => {
     const response = await get();
     expect(response.status).toBe(200);

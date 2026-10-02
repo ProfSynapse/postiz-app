@@ -58,16 +58,39 @@ export abstract class SocialAbstract {
         try {
           return await func();
         } catch (err) {
-          console.log(err);
-          const handle = this.handleErrors(JSON.stringify(err));
-          return { err: true, ...(handle || {}) };
+          // Never log/store a raw provider error: it may contain OAuth headers.
+          let serialized = '{}';
+          try {
+            serialized = JSON.stringify(err) || '{}';
+          } catch {}
+          const handle = this.handleErrors(serialized);
+          const status = Number(
+            (err as any)?.response?.status || (err as any)?.code
+          );
+          return {
+            err: true,
+            ...(handle || {
+              type: 'bad-body',
+              value: `${this.identifier} request failed${
+                Number.isInteger(status) && status >= 100 && status <= 599
+                  ? ` (HTTP ${status})`
+                  : ''
+              }.`,
+            }),
+          };
         }
       },
       ignoreConcurrency
     );
 
-    if (value && value?.err && value?.value) {
-      throw new BadBody('', JSON.stringify({}), {} as any, value.value || '');
+    if (value?.err) {
+      const ErrorType = value.type === 'refresh-token' ? RefreshToken : BadBody;
+      throw new ErrorType(
+        this.identifier,
+        '{}',
+        {} as any,
+        value.value || `${this.identifier} request failed.`
+      );
     }
 
     return value;

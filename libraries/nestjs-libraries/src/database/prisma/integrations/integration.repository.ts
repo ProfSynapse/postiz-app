@@ -1,5 +1,6 @@
 import { PrismaRepository } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { Injectable } from '@nestjs/common';
+import { youtubeTokenExpiration } from '@gitroom/nestjs-libraries/integrations/auth-token-expiry';
 import dayjs from 'dayjs';
 import { Integration } from '@prisma/client';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
@@ -199,6 +200,12 @@ export class IntegrationRepository {
     timezone?: number,
     customInstanceDetails?: string
   ) {
+    const tokenExpiration =
+      provider === 'youtube'
+        ? youtubeTokenExpiration(expiresIn)
+        : expiresIn
+        ? new Date(Date.now() + expiresIn * 1000)
+        : undefined;
     const postTimes = timezone
       ? {
           postingTimes: JSON.stringify([
@@ -224,9 +231,7 @@ export class IntegrationRepository {
         ...(picture ? { picture } : {}),
         inBetweenSteps: isBetweenSteps,
         refreshToken,
-        ...(expiresIn
-          ? { tokenExpiration: new Date(Date.now() + expiresIn * 1000) }
-          : {}),
+        ...(tokenExpiration ? { tokenExpiration } : {}),
         internalId,
         ...postTimes,
         organizationId: org,
@@ -252,10 +257,8 @@ export class IntegrationRepository {
         profile: username,
         providerIdentifier: provider,
         token,
-        refreshToken,
-        ...(expiresIn
-          ? { tokenExpiration: new Date(Date.now() + expiresIn * 1000) }
-          : {}),
+        ...(provider === 'youtube' && !refreshToken ? {} : { refreshToken }),
+        ...(tokenExpiration ? { tokenExpiration } : {}),
         internalId,
         organizationId: org,
         deletedAt: null,
@@ -286,9 +289,7 @@ export class IntegrationRepository {
           token,
           refreshToken,
           refreshNeeded: false,
-          ...(expiresIn
-            ? { tokenExpiration: new Date(Date.now() + expiresIn * 1000) }
-            : {}),
+          ...(tokenExpiration ? { tokenExpiration } : {}),
         },
       });
     }

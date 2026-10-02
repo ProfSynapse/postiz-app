@@ -21,7 +21,10 @@
 //   - Remove S3 BadBody guard → {1 fail} (provider-level S3 guard test).
 
 import { Readable } from 'node:stream';
-import { BadBody } from '@gitroom/nestjs-libraries/integrations/social.abstract';
+import {
+  BadBody,
+  RefreshToken,
+} from '@gitroom/nestjs-libraries/integrations/social.abstract';
 import { gaxiosOkResponse } from './__fixtures__/youtube.fixtures';
 
 // --- Module mocks ----------------------------------------------------------
@@ -42,13 +45,14 @@ const videosInsert = jest.fn();
 const thumbnailsSet = jest.fn();
 const captionsInsert = jest.fn();
 const userinfoGet = jest.fn();
+const refreshAccessToken = jest.fn();
 
 jest.mock('googleapis', () => ({
   google: {
     auth: {
       OAuth2: jest.fn().mockImplementation(() => ({
         setCredentials: jest.fn(),
-        refreshAccessToken: jest.fn(),
+        refreshAccessToken,
         getToken: jest.fn(),
         getTokenInfo: jest.fn(),
         generateAuthUrl: jest.fn(),
@@ -79,9 +83,7 @@ jest.mock('axios', () => {
 
 // Imports MUST come after jest.mock calls so the mocked modules are loaded.
 import axios from 'axios';
-import {
-  YoutubeProvider,
-} from './youtube.provider';
+import { YoutubeProvider } from './youtube.provider';
 
 // --- Helpers --------------------------------------------------------------
 
@@ -322,13 +324,13 @@ describe('YoutubeProvider', () => {
       expect(arg.requestBody.snippet.language).toBe('es');
     });
 
-    it("derives mimeType from the .srt extension (M14: application/x-subrip)", async () => {
+    it('derives mimeType from the .srt extension (M14: application/x-subrip)', async () => {
       await provider.post('i', 'token', makePostDetails(captionSettings()));
       const arg = captionsInsert.mock.calls[0][0];
       expect(arg.media.mimeType).toBe('application/x-subrip');
     });
 
-    it("derives mimeType from the .vtt extension (M14: text/vtt)", async () => {
+    it('derives mimeType from the .vtt extension (M14: text/vtt)', async () => {
       await provider.post(
         'i',
         'token',
@@ -401,7 +403,7 @@ describe('YoutubeProvider', () => {
       expect(errorSpy).toHaveBeenCalled();
     });
 
-    it("tolerates captionExists 409 as soft-success (S12)", async () => {
+    it('tolerates captionExists 409 as soft-success (S12)', async () => {
       captionsInsert.mockRejectedValueOnce({
         message: 'captionExists',
         errors: [{ reason: 'captionExists' }],
@@ -416,7 +418,9 @@ describe('YoutubeProvider', () => {
       expect(result[0].status).toBe('success');
       // captionErrorMessage should have produced the soft-success string.
       const messages = errorSpy.mock.calls.flatMap((args) =>
-        args.map((a: unknown) => (typeof a === 'string' ? a : JSON.stringify(a)))
+        args.map((a: unknown) =>
+          typeof a === 'string' ? a : JSON.stringify(a)
+        )
       );
       expect(
         messages.some((m) => m.includes('soft-success') || m.includes('captionExists'))
@@ -568,5 +572,91 @@ describe('YoutubeProvider', () => {
       expect(stripped).not.toContain('ya29.SECRET');
       expect(stripped).not.toContain('1//SECRET');
     });
+  });
+});
+
+describe('YouTube authenticated upload failures', () => {
+  beforeEach(() => {
+    jest.restoreAllMocks();
+    jest.clearAllMocks();
+    (axios as unknown as jest.Mock).mockImplementation(async () => ({
+      data: Readable.from([Buffer.from('mock-bytes')]),
+    }));
+  });
+  it('signals one refresh for an upload rejected with HTTP 401', async () => {
+    videosInsert.mockRejectedValue({
+      code: 401,
+      response: { status: 401 },
+      message: 'Invalid Credentials',
+    });
+    await expect(
+      new YoutubeProvider().post(
+        'channel',
+        'test-token',
+        makePostDetails(makeSettings())
+      )
+    ).rejects.toBeInstanceOf(RefreshToken);
+    expect(videosInsert).toHaveBeenCalledTimes(1);
+    expect(thumbnailsSet).not.toHaveBeenCalled();
+    expect(captionsInsert).not.toHaveBeenCalled();
+  });
+  it('surfaces unknown upload failure instead of returning an undefined ID', async () => {
+    videosInsert.mockRejectedValue({ code: 503 });
+    await expect(
+      new YoutubeProvider().post(
+        'channel',
+        'test-token',
+        makePostDetails(makeSettings())
+      )
+    ).rejects.toBeInstanceOf(BadBody);
+  });
+  it('rejects an upload response without a video ID', async () => {
+    videosInsert.mockResolvedValue(gaxiosOkResponse({}));
+    await expect(
+      new YoutubeProvider().post(
+        'channel',
+        'test-token',
+        makePostDetails(makeSettings())
+      )
+    ).rejects.toBeInstanceOf(BadBody);
+    expect(thumbnailsSet).not.toHaveBeenCalled();
+    expect(captionsInsert).not.toHaveBeenCalled();
+  });
+  it('does not signal a re-upload when thumbnail auth fails after a successful insert', async () => {
+    videosInsert.mockResolvedValue(videoIdResponse('aB_cD-12345'));
+    thumbnailsSet.mockRejectedValue({
+      code: 401,
+      response: { status: 401 },
+      message: 'Invalid Credentials',
+    });
+    await expect(
+      new YoutubeProvider().post(
+        'channel',
+        'test-token',
+        makePostDetails(
+          makeSettings({
+            thumbnail: { path: 'https://cdn.example.com/cover.png' },
+          })
+        )
+      )
+    ).rejects.toBeInstanceOf(BadBody);
+    expect(videosInsert).toHaveBeenCalledTimes(1);
+  });
+  it('retains the existing refresh grant when Google does not rotate it', async () => {
+    refreshAccessToken.mockResolvedValue({
+      credentials: {
+        access_token: 'test-new-access',
+        expiry_date: Date.now() + 3600000,
+      },
+    });
+    userinfoGet.mockResolvedValue({
+      data: { id: 'user', name: 'Test channel' },
+    });
+    const result = await new YoutubeProvider().refreshToken(
+      'test-existing-grant'
+    );
+    expect(result.refreshToken).toBe('test-existing-grant');
+    expect(result.expiresIn).toBeGreaterThan(3590);
+    expect(result.expiresIn).toBeLessThanOrEqual(3600);
   });
 });

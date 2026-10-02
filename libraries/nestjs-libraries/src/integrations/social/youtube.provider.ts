@@ -230,6 +230,19 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
         value: string;
       }
     | undefined {
+    if (
+      body.includes('Invalid Credentials') ||
+      body.includes('authError') ||
+      body.includes('invalid_token') ||
+      body.includes('"code":401') ||
+      body.includes('"status":401')
+    ) {
+      return {
+        type: 'refresh-token',
+        value:
+          'YouTube authentication is invalid; refresh the existing connection.',
+      };
+    }
     if (body.includes('invalidTitle')) {
       return {
         type: 'bad-body',
@@ -304,7 +317,7 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
     return {
       accessToken: credentials.access_token!,
       expiresIn: unixTimestamp!,
-      refreshToken: credentials.refresh_token!,
+      refreshToken: credentials.refresh_token || refresh_token,
       id: data.id!,
       name: data.name!,
       picture: data?.picture || '',
@@ -490,21 +503,41 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
       true
     );
 
-    if (settings?.thumbnail?.path) {
-      await this.runInConcurrent(async () =>
-        youtubeClient.thumbnails.set({
-          videoId: all?.data?.id!,
-          media: {
-            body: (
-              await axios({
-                url: settings?.thumbnail?.path,
-                method: 'GET',
-                responseType: 'stream',
-              })
-            ).data,
-          },
-        })
+    if (!all?.data?.id || typeof all.data.id !== 'string') {
+      throw new BadBody(
+        'youtube-upload-response',
+        '{}',
+        {} as any,
+        'YouTube upload returned no video ID. Check the channel inventory before retrying.'
       );
+    }
+
+    if (settings?.thumbnail?.path) {
+      try {
+        await this.runInConcurrent(async () =>
+          youtubeClient.thumbnails.set({
+            videoId: all?.data?.id!,
+            media: {
+              body: (
+                await axios({
+                  url: settings?.thumbnail?.path,
+                  method: 'GET',
+                  responseType: 'stream',
+                })
+              ).data,
+            },
+          })
+        );
+      } catch (error) {
+        // Upload already succeeded. Never refresh/re-upload for an optional
+        // attachment failure; require inventory verification before retrying.
+        throw new BadBody(
+          'youtube-thumbnail-after-upload',
+          '{}',
+          {} as any,
+          `Video ${all.data.id} was uploaded, but its thumbnail failed. Check the existing video before retrying.`
+        );
+      }
     }
 
     // S7: direct call (NOT runInConcurrent) so caption failures stay local

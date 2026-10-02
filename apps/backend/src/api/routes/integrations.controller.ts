@@ -39,6 +39,7 @@ import {
 } from '@gitroom/backend/services/auth/permissions/permission.exception.class';
 import { uniqBy } from 'lodash';
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
+import { mergeReconnectAuth } from '@gitroom/nestjs-libraries/integrations/auth-token-expiry';
 import { resolveLinkedInReconnectId } from '@gitroom/nestjs-libraries/integrations/social/linkedin.reconnect';
 
 @ApiTags('Integrations')
@@ -449,7 +450,7 @@ export class IntegrationsController {
           refresh,
           auth.accessToken
         );
-        return res({ ...newAuth, refreshToken: body.refresh });
+        return res(mergeReconnectAuth(auth, newAuth, body.refresh));
       }
 
       return res(auth);

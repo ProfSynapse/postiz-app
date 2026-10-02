@@ -126,6 +126,50 @@ export function publicMediaUrl(path: unknown): string | null {
   }
 }
 
+/** Release links need a separate allowlist: YouTube watch URLs use a v query. */
+export function publicReleaseUrl(
+  path: unknown,
+  provider: string
+): string | null {
+  if (provider !== 'youtube') return publicMediaUrl(path);
+  if (typeof path !== 'string') return null;
+  try {
+    const url = new URL(path);
+    if (
+      url.protocol !== 'https:' ||
+      url.username ||
+      url.password ||
+      url.port ||
+      url.hash
+    )
+      return null;
+    if (
+      !['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be'].includes(
+        url.hostname
+      )
+    )
+      return null;
+    const validId = (id: string | null) =>
+      !!id && /^[A-Za-z0-9_-]{11}$/.test(id);
+    if (url.hostname !== 'youtu.be' && url.pathname === '/watch') {
+      const params = [...url.searchParams.entries()];
+      return params.length === 1 &&
+        params[0][0] === 'v' &&
+        validId(params[0][1])
+        ? url.toString()
+        : null;
+    }
+    if (url.search) return null;
+    const id =
+      url.hostname === 'youtu.be'
+        ? url.pathname.slice(1)
+        : url.pathname.match(/^\/(?:shorts|embed)\/([A-Za-z0-9_-]{11})$/)?.[1];
+    return validId(id || null) ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
 export function resolvePublicMedia(
   reference: unknown,
   rows: PublicMediaRow[]

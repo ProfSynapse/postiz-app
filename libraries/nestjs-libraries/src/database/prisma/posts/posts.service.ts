@@ -47,8 +47,13 @@ dayjs.extend(utc);
 import * as Sentry from '@sentry/nestjs';
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
 import {
-  PublicPostDetailsDto, parseStoredJson, mediaReferences, mediaReferenceKeys,
-  projectPublicSettings, resolvePublicMedia, publicMediaUrl,
+  PublicPostDetailsDto,
+  parseStoredJson,
+  mediaReferences,
+  mediaReferenceKeys,
+  projectPublicSettings,
+  resolvePublicMedia,
+  publicReleaseUrl,
 } from '@gitroom/nestjs-libraries/dtos/posts/public-post-details.dto';
 
 type PostWithConditionals = Post & {
@@ -220,7 +225,7 @@ export class PostsService {
         return {
           id: post.id, parentPostId: post.parentPostId, state: post.state,
           publishDate: post.publishDate, content: post.content, title: post.title,
-          description: post.description, releaseURL: publicMediaUrl(post.releaseURL),
+          description: post.description, releaseURL: publicReleaseUrl(post.releaseURL, post.integration.providerIdentifier),
           image: resolved.filter((entry): entry is NonNullable<typeof entry> => !!entry),
           mediaComplete: Array.isArray(image) && resolved.every((entry) => !!entry?.url),
           settings: projected.settings, settingsComplete: projected.complete,
@@ -497,11 +502,18 @@ export class PostsService {
       return {};
     }
 
-    if (dayjs(integration?.tokenExpiration).isBefore(dayjs()) || forceRefresh) {
+    const refreshedInAttempt =
+      dayjs(integration?.tokenExpiration).isBefore(dayjs()) || forceRefresh;
+    if (refreshedInAttempt) {
       const data = await this._refreshIntegrationService.refresh(integration);
 
       if (!data) {
-        return undefined;
+        throw new BadBody(
+          integration.providerIdentifier,
+          '{}',
+          {} as any,
+          'The existing connection could not be refreshed. Reconnect the channel before retrying.'
+        );
       }
 
       integration.token = data.accessToken;
@@ -568,6 +580,24 @@ export class PostsService {
         ),
         integration
       );
+
+      if (
+        !publishedPosts?.length ||
+        publishedPosts.some(
+          (result) =>
+            !result.postId ||
+            !result.releaseURL ||
+            (integration.providerIdentifier === 'youtube' &&
+              !publicReleaseUrl(result.releaseURL, 'youtube'))
+        )
+      ) {
+        throw new BadBody(
+          integration.providerIdentifier,
+          '{}',
+          {} as any,
+          'Provider returned no valid publication ID/link. Check channel inventory before retrying.'
+        );
+      }
 
       for (const post of publishedPosts) {
         try {
@@ -650,6 +680,14 @@ export class PostsService {
         return { postId: main.postId, releaseURL: main.releaseURL };
       }
       if (err instanceof RefreshToken) {
+        if (refreshedInAttempt) {
+          throw new BadBody(
+            integration.providerIdentifier,
+            '{}',
+            {} as any,
+            'Authentication failed after one token refresh. Reconnect the channel before retrying.'
+          );
+        }
         return this.postSocial(integration, posts, true);
       }
 

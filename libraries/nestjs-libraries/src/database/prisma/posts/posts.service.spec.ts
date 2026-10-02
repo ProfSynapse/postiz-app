@@ -335,3 +335,141 @@ describe('PostsService LinkedIn partial publication', () => {
     ).toBe(false);
   });
 });
+
+describe('YouTube publication checkpoints', () => {
+  function setup(result?: any) {
+    const built = buildService({ postRepository: { updatePost: jest.fn() } });
+    const integration = {
+      id: 'yt-integration',
+      organizationId: 'org-a',
+      internalId: 'channel',
+      providerIdentifier: 'youtube',
+      token: 'test-access',
+      tokenExpiration: new Date('2058-01-01'),
+      disabled: false,
+      refreshNeeded: false,
+    };
+    const row = {
+      id: 'yt-post',
+      organizationId: 'org-a',
+      integration,
+      content: 'Approved video',
+      image: '[]',
+      settings: '{}',
+      publishDate: new Date(),
+    };
+    const provider = {
+      identifier: 'youtube',
+      editor: 'normal',
+      post: jest.fn().mockResolvedValue(result),
+    };
+    const refresh = jest
+      .fn()
+      .mockResolvedValue({ accessToken: 'test-refreshed' });
+    const digest = jest.fn();
+    Object.assign(built.service, {
+      _integrationManager: { getSocialIntegration: () => provider },
+      _refreshIntegrationService: { refresh },
+      _webhookService: { digestWebhooks: digest },
+    });
+    jest
+      .spyOn(built.service, 'getPostsRecursively')
+      .mockResolvedValue([row] as any);
+    jest.spyOn(built.service, 'updateTags').mockResolvedValue([row] as any);
+    jest.spyOn(built.service as any, 'updateMedia').mockResolvedValue([]);
+    jest.spyOn(built.service as any, 'checkPlugs').mockResolvedValue(undefined);
+    jest
+      .spyOn(built.service as any, 'checkInternalPlug')
+      .mockResolvedValue(undefined);
+    return { ...built, integration, row, provider, refresh, digest };
+  }
+  afterEach(() => jest.restoreAllMocks());
+  it.each([
+    undefined,
+    [],
+    [
+      {
+        id: 'yt-post',
+        postId: undefined,
+        releaseURL: 'https://www.youtube.com/watch?v=undefined',
+      },
+    ],
+    [
+      {
+        id: 'yt-post',
+        postId: 'undefined',
+        releaseURL: 'https://www.youtube.com/watch?v=undefined',
+      },
+    ],
+  ])(
+    'never emits a success digest or published state for an invalid result (%j)',
+    async (result) => {
+      const x = setup(result);
+      jest.spyOn(console, 'error').mockImplementation(() => {});
+      await x.service.post('yt-post');
+      expect(x.postRepository.updatePost).not.toHaveBeenCalled();
+      expect(x.postRepository.changeState).toHaveBeenCalledWith(
+        'yt-post',
+        'ERROR',
+        expect.anything(),
+        expect.anything()
+      );
+      expect(x.digest).not.toHaveBeenCalled();
+      expect(
+        x.notificationService.inAppNotification.mock.calls.some((call) =>
+          String(call[1]).includes('has been published')
+        )
+      ).toBe(false);
+    }
+  );
+  it('publishes and sends the digest only for a valid video ID/link', async () => {
+    const x = setup([
+      {
+        id: 'yt-post',
+        postId: 'aB_cD-12345',
+        releaseURL: 'https://www.youtube.com/watch?v=aB_cD-12345',
+      },
+    ]);
+    await x.service.post('yt-post');
+    expect(x.postRepository.updatePost).toHaveBeenCalledWith(
+      'yt-post',
+      'aB_cD-12345',
+      'https://www.youtube.com/watch?v=aB_cD-12345'
+    );
+    expect(x.digest).toHaveBeenCalledTimes(1);
+    expect(
+      x.notificationService.inAppNotification.mock.calls.some((call) =>
+        String(call[1]).includes('has been published')
+      )
+    ).toBe(true);
+  });
+  it('does not refresh twice when an expired token was already refreshed before upload', async () => {
+    const {
+      RefreshToken,
+      BadBody,
+    } = require('@gitroom/nestjs-libraries/integrations/social.abstract');
+    const x = setup();
+    x.integration.tokenExpiration = new Date('2020-01-01');
+    x.provider.post.mockRejectedValue(new RefreshToken('youtube'));
+    await expect(
+      (x.service as any).postSocial(x.integration, [x.row])
+    ).rejects.toBeInstanceOf(BadBody);
+    expect(x.provider.post).toHaveBeenCalledTimes(1);
+    expect(x.refresh).toHaveBeenCalledTimes(1);
+  });
+  it('stops after one refresh rather than recursively retrying invalid authentication', async () => {
+    const {
+      RefreshToken,
+      BadBody,
+    } = require('@gitroom/nestjs-libraries/integrations/social.abstract');
+    const x = setup();
+    x.provider.post.mockRejectedValue(new RefreshToken('youtube'));
+    await expect(
+      (x.service as any).postSocial(x.integration, [x.row])
+    ).rejects.toBeInstanceOf(BadBody);
+    expect(x.provider.post).toHaveBeenCalledTimes(2);
+    expect(x.refresh).toHaveBeenCalledTimes(1);
+    expect(x.postRepository.updatePost).not.toHaveBeenCalled();
+    expect(x.digest).not.toHaveBeenCalled();
+  });
+});
