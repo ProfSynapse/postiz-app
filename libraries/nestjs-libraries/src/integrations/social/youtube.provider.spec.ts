@@ -46,6 +46,8 @@ const thumbnailsSet = jest.fn();
 const captionsInsert = jest.fn();
 const userinfoGet = jest.fn();
 const refreshAccessToken = jest.fn();
+const getToken = jest.fn();
+const getTokenInfo = jest.fn();
 
 jest.mock('googleapis', () => ({
   google: {
@@ -53,8 +55,8 @@ jest.mock('googleapis', () => ({
       OAuth2: jest.fn().mockImplementation(() => ({
         setCredentials: jest.fn(),
         refreshAccessToken,
-        getToken: jest.fn(),
-        getTokenInfo: jest.fn(),
+        getToken,
+        getTokenInfo,
         generateAuthUrl: jest.fn(),
       })),
     },
@@ -84,6 +86,7 @@ jest.mock('axios', () => {
 // Imports MUST come after jest.mock calls so the mocked modules are loaded.
 import axios from 'axios';
 import { YoutubeProvider } from './youtube.provider';
+import { mergeReconnectAuth } from '../auth-token-expiry';
 
 // --- Helpers --------------------------------------------------------------
 
@@ -374,10 +377,9 @@ describe('YoutubeProvider', () => {
         },
       ]);
       expect(errorSpy).toHaveBeenCalled();
-      const errArgs = errorSpy.mock.calls
-        .find((args) =>
-          typeof args[0] === 'string' && args[0].includes('caption')
-        );
+      const errArgs = errorSpy.mock.calls.find(
+        (args) => typeof args[0] === 'string' && args[0].includes('caption')
+      );
       expect(errArgs).toBeDefined();
     });
 
@@ -423,7 +425,9 @@ describe('YoutubeProvider', () => {
         )
       );
       expect(
-        messages.some((m) => m.includes('soft-success') || m.includes('captionExists'))
+        messages.some(
+          (m) => m.includes('soft-success') || m.includes('captionExists')
+        )
       ).toBe(true);
     });
 
@@ -641,6 +645,46 @@ describe('YouTube authenticated upload failures', () => {
       )
     ).rejects.toBeInstanceOf(BadBody);
     expect(videosInsert).toHaveBeenCalledTimes(1);
+  });
+  it('carries the Google token response grant through reconnect with an empty request field without logging tokens', async () => {
+    const log = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const provider = new YoutubeProvider();
+      getToken.mockResolvedValue({
+        tokens: {
+          access_token: 'test-google-access',
+          refresh_token: 'test-google-refresh',
+          expiry_date: Date.now() + 3600000,
+        },
+      });
+      getTokenInfo.mockResolvedValue({ scopes: provider.scopes });
+      userinfoGet.mockResolvedValue({
+        data: { id: 'google-user', name: 'User' },
+      });
+      const auth = await provider.authenticate({
+        code: 'test-consent-code',
+        codeVerifier: 'test-state',
+      });
+      const selected = {
+        id: 'youtube-channel',
+        name: 'Channel',
+        accessToken: auth.accessToken,
+        username: '',
+      };
+      const connected = mergeReconnectAuth(auth, selected, undefined as any);
+      expect(connected.refreshToken).toBe('test-google-refresh');
+      expect(connected.expiresIn).toBeGreaterThan(3590);
+      expect(getToken).toHaveBeenCalledWith('test-consent-code');
+      expect(log).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+      warn.mockRestore();
+      error.mockRestore();
+    }
   });
   it('retains the existing refresh grant when Google does not rotate it', async () => {
     refreshAccessToken.mockResolvedValue({

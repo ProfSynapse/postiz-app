@@ -24,6 +24,42 @@ describe('OAuth expiry preservation', () => {
       accessToken: 'channel-access',
     });
   });
+  it.each([undefined, '', 'request-fallback'])(
+    "keeps Google's fresh refresh grant over request field %s",
+    (requestGrant) => {
+      const auth = {
+        id: 'user',
+        name: 'User',
+        accessToken: 'test-access',
+        refreshToken: 'test-google-grant',
+        expiresIn: 3600,
+      } as any;
+      const selected = {
+        id: 'channel',
+        name: 'Channel',
+        accessToken: 'test-access',
+      } as any;
+      expect(
+        mergeReconnectAuth(auth, selected, requestGrant as any).refreshToken
+      ).toBe('test-google-grant');
+    }
+  );
+  it('uses the request grant only when the provider returns no new grant', () => {
+    const auth = {
+      id: 'user',
+      name: 'User',
+      accessToken: 'test-access',
+      expiresIn: 3600,
+    } as any;
+    const selected = {
+      id: 'channel',
+      name: 'Channel',
+      accessToken: 'test-access',
+    } as any;
+    expect(
+      mergeReconnectAuth(auth, selected, 'test-existing-grant').refreshToken
+    ).toBe('test-existing-grant');
+  });
   it('stores the actual short-lived expiry', () => {
     expect(youtubeTokenExpiration(3600, 1000).getTime()).toBe(3601000);
   });

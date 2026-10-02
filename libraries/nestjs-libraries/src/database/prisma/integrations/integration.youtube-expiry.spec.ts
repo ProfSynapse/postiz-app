@@ -45,6 +45,8 @@ describe('YouTube integration expiry persistence', () => {
       '2026-10-02T14:00:00.000Z'
     );
     expect(args.update.tokenExpiration).toEqual(args.create.tokenExpiration);
+    expect(args.create.refreshToken).toBe('test-refresh');
+    expect(args.update.refreshToken).toBe('test-refresh');
   });
   it('does not fabricate a decades-long expiry or erase an existing refresh grant', async () => {
     const args = await save('youtube');

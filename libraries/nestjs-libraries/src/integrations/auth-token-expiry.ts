@@ -6,7 +6,12 @@ export function mergeReconnectAuth(
   channel: Omit<AuthTokenDetails, 'refreshToken' | 'expiresIn'>,
   refreshToken: string
 ): AuthTokenDetails {
-  return { ...auth, ...channel, expiresIn: auth.expiresIn, refreshToken };
+  return {
+    ...auth,
+    ...channel,
+    expiresIn: auth.expiresIn,
+    refreshToken: auth.refreshToken || refreshToken,
+  };
 }
 
 /** Missing/legacy synthetic YouTube expiry is due now, never decades away. */
