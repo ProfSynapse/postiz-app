@@ -426,24 +426,58 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
     const until = dayjs().endOf('day').unix();
     const since = dayjs().subtract(date, 'day').unix();
 
-    const { data } = await (
-      await fetch(
-        `https://graph.facebook.com/v20.0/${id}/insights?metric=page_impressions_unique,page_posts_impressions_unique,page_post_engagements,page_daily_follows,page_video_views&access_token=${accessToken}&period=day&since=${since}&until=${until}`
-      )
-    ).json();
+    // Meta removed the impressions/reach Page Insights metrics
+    // (page_impressions_unique, page_posts_impressions_unique, ...) in favour
+    // of "views" metrics. A single invalid metric makes Meta reject the whole
+    // request, so request them together first and fall back to one by one.
+    const metrics = [
+      'page_total_media_view_unique',
+      'page_media_view',
+      'page_post_engagements',
+      'page_daily_follows_unique',
+      'page_video_views',
+    ];
+
+    const loadInsights = async (metric: string) =>
+      (
+        await fetch(
+          `https://graph.facebook.com/v20.0/${id}/insights?metric=${metric}&access_token=${accessToken}&period=day&since=${since}&until=${until}`
+        )
+      ).json();
+
+    const batch = await loadInsights(metrics.join(','));
+    let data = batch.data;
+
+    if (batch.error) {
+      console.error(
+        `[facebook] page insights batch request failed: ${batch.error.message}`
+      );
+      const results = await Promise.all(
+        metrics.map(async (metric) => {
+          const res = await loadInsights(metric);
+          if (res.error) {
+            console.error(
+              `[facebook] page insights metric ${metric} failed: ${res.error.message}`
+            );
+          }
+          return res.data || [];
+        })
+      );
+      data = results.flat();
+    }
 
     return (
       data?.map((d: any) => ({
         label:
-          d.name === 'page_impressions_unique'
-            ? 'Page Impressions'
+          d.name === 'page_total_media_view_unique'
+            ? 'Page Reach'
             : d.name === 'page_post_engagements'
             ? 'Posts Engagement'
-            : d.name === 'page_daily_follows'
+            : d.name === 'page_daily_follows_unique'
             ? 'Page followers'
             : d.name === 'page_video_views'
             ? 'Videos views'
-            : 'Posts Impressions',
+            : 'Content Views',
         percentageChange: 5,
         data: d?.values?.map((v: any) => ({
           total: v.value,
