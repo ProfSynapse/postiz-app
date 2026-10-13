@@ -11,7 +11,7 @@ jobs:
 
     strategy:
       matrix:
-        node-version: ['20.17.0']
+        node-version: ['22.20.0']
         # See supported Node.js release schedule at https://nodejs.org/en/about/releases/
 
     steps:
@@ -25,28 +25,43 @@ jobs:
           node-version: ${{ matrix.node-version }}
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v2
+        uses: pnpm/action-setup@v4
         with:
-          version: 8
+          # Read the pinned packageManager version from package.json.
           run_install: false
 
       - name: Get pnpm store directory
         shell: bash
         run: |
-          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+          echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_ENV"
+
+      # Compute once before installation; cache post steps must not rehash the
+      # installed dependency tree or a lockfile rewritten during installation.
+      - name: Compute cache keys
+        id: cache-keys
+        env:
+          CACHE_PREFIX: ${{ runner.os }}-${{ runner.arch }}-node-${{ matrix.node-version }}
+          DEPENDENCY_HASH: ${{ hashFiles('pnpm-lock.yaml', 'package.json') }}
+        run: |
+          echo "pnpm=$CACHE_PREFIX-pnpm-store-v2-$DEPENDENCY_HASH" >> "$GITHUB_OUTPUT"
+          echo "next=$CACHE_PREFIX-nextjs-v2-$DEPENDENCY_HASH-" >> "$GITHUB_OUTPUT"
 
       - name: Setup pnpm cache
         uses: actions/cache@v4
         with:
-          path: |
-            ${{ env.STORE_PATH }}
-            ${{ github.workspace }}/.next/cache
-          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}-${{ hashFiles('**/*.js', '**/*.jsx', '**/*.ts', '**/*.tsx') }}
+          path: ${{ env.STORE_PATH }}
+          key: ${{ steps.cache-keys.outputs.pnpm }}
+
+      - name: Setup Next.js cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/apps/frontend/.next/cache
+          key: ${{ steps.cache-keys.outputs.next }}${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}-
+            ${{ steps.cache-keys.outputs.next }}
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Build
         run: pnpm run build
