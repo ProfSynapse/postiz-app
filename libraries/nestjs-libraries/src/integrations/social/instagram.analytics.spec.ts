@@ -27,7 +27,7 @@ describe('Instagram analytics', () => {
     jest.useRealTimers();
   });
 
-  it.each([7, 30, 90])(
+  it.each([7, 29, 30, 90])(
     'keeps %i-day requests inside the exact Meta window limit',
     async (days) => {
       const seen: URL[] = [];

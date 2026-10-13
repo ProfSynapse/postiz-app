@@ -678,7 +678,7 @@ export class InstagramProvider
     date: number,
     type = 'graph.facebook.com'
   ): Promise<AnalyticsData[]> {
-    if (![7, 30, 90].includes(date)) return [];
+    if (!Number.isInteger(date) || date < 1 || date > 90) return [];
     // Meta permits at most 30 * 86400 seconds per request. End-of-day made even
     // the 30-day view exceed that limit; longer views need contiguous windows.
     const until = dayjs().unix();
