@@ -678,50 +678,123 @@ export class InstagramProvider
     date: number,
     type = 'graph.facebook.com'
   ): Promise<AnalyticsData[]> {
-    const until = dayjs().endOf('day').unix();
-    const since = dayjs().subtract(date, 'day').unix();
+    if (!Number.isInteger(date) || date < 1 || date > 90) return [];
+    // Meta permits at most 30 * 86400 seconds per request. End-of-day made even
+    // the 30-day view exceed that limit; longer views need contiguous windows.
+    const until = dayjs().unix();
+    const day = 86400;
+    const windows: Array<{ since: number; until: number }> = [];
+    for (let since = until - date * day; since < until; since += 30 * day) {
+      windows.push({ since, until: Math.min(since + 30 * day, until) });
+    }
+    // Follower history is limited to the latest 30 days. Omit it from longer
+    // views rather than label a partial follower count as a 90-day total.
+    const dailyMetrics = date <= 30 ? ['follower_count', 'reach'] : ['reach'];
+    const totalMetrics = [
+      'likes',
+      'views',
+      'comments',
+      'shares',
+      'saves',
+      'replies',
+    ];
+    const collected = new Map<string, any[]>();
 
-    const { data, ...all } = await (
-      await fetch(
-        `https://${type}/v21.0/${id}/insights?metric=follower_count,reach&access_token=${accessToken}&period=day&since=${since}&until=${until}`
-      )
-    ).json();
+    for (const window of windows) {
+      const load = async (
+        metrics: string[],
+        total: boolean
+      ): Promise<any[]> => {
+        const params = new URLSearchParams({
+          metric: metrics.join(','),
+          period: 'day',
+          since: String(window.since),
+          until: String(window.until),
+          ...(total ? { metric_type: 'total_value' } : {}),
+        });
+        const response = await fetch(
+          `https://${type}/v21.0/${id}/insights?${params}`,
+          {
+            headers: { Authorization: `Bearer ${accessToken}` },
+            signal: AbortSignal.timeout(10000),
+          }
+        );
+        const body = await response.json();
+        if (response.ok && Array.isArray(body.data)) return body.data;
+        // A rejected metric must not discard the other metrics in its batch.
+        // Do not fan out authentication, rate-limit or transient failures.
+        if (body.error?.code === 100 && metrics.length > 1) {
+          const rows = [];
+          for (const metric of metrics)
+            rows.push(...(await load([metric], total)));
+          return rows;
+        }
+        if (body.error?.code === 100) return [];
+        throw new Error('Instagram insights request failed');
+      };
+      const rows = [
+        ...(await load(dailyMetrics, false)),
+        ...(await load(totalMetrics, true)),
+      ];
+      for (const row of rows) {
+        if (
+          !dailyMetrics.includes(row.name) &&
+          !totalMetrics.includes(row.name)
+        )
+          continue;
+        const previous = collected.get(row.name) || [];
+        collected.set(row.name, [...previous, row]);
+      }
+    }
 
-    const { data: data2, ...all2 } = await (
-      await fetch(
-        `https://${type}/v21.0/${id}/insights?metric_type=total_value&metric=likes,views,comments,shares,saves,replies&access_token=${accessToken}&period=day&since=${since}&until=${until}`
-      )
-    ).json();
     const analytics = [];
-
-    analytics.push(
-      ...(data?.map((d: any) => ({
-        label: this.setTitle(d.name),
-        percentageChange: 5,
-        data: d.values.map((v: any) => ({
-          total: v.value,
-          date: dayjs(v.end_time).format('YYYY-MM-DD'),
-        })),
-      })) || [])
-    );
-
-    analytics.push(
-      ...data2.map((d: any) => ({
-        label: this.setTitle(d.name),
-        percentageChange: 5,
-        data: [
-          {
-            total: d.total_value.value,
-            date: dayjs().format('YYYY-MM-DD'),
-          },
-          {
-            total: d.total_value.value,
-            date: dayjs().add(1, 'day').format('YYYY-MM-DD'),
-          },
-        ],
-      }))
-    );
-
+    for (const [name, rows] of collected) {
+      // Missing windows are unknown, not zero. Never show a partial period sum.
+      if (rows.length !== windows.length) continue;
+      const total = totalMetrics.includes(name);
+      if (total && rows.some((row) => !Number.isFinite(row.total_value?.value)))
+        continue;
+      if (
+        !total &&
+        rows.some((row) => !Array.isArray(row.values) || !row.values.length)
+      )
+        continue;
+      const points = new Map<string, number>();
+      if (!total) {
+        for (const row of rows) {
+          for (const point of row.values) {
+            if (
+              Number.isFinite(point.value) &&
+              dayjs(point.end_time).isValid()
+            ) {
+              points.set(
+                dayjs(point.end_time).format('YYYY-MM-DD'),
+                point.value
+              );
+            }
+          }
+        }
+      }
+      analytics.push({
+        label: this.setTitle(name),
+        percentageChange: 0,
+        // total_value is one period total, not two identical daily values.
+        // Duplicating it for a chart doubles the headline in Postiz and the CMS.
+        data: total
+          ? [
+              {
+                total: rows.reduce(
+                  (sum, row) => sum + row.total_value.value,
+                  0
+                ),
+                date: dayjs.unix(until).format('YYYY-MM-DD'),
+              },
+            ]
+          : [...points]
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([date, total]) => ({ date, total })),
+      });
+    }
     return analytics;
   }
 
