@@ -332,7 +332,45 @@ export class PostsRepository {
         state: 'PUBLISHED',
         releaseURL,
         releaseId: postId,
+        // A successful publish supersedes any earlier failure of this post.
+        error: null,
       },
+    });
+  }
+
+  /**
+   * The most recent unresolved failure this publish supersedes: an earlier
+   * failed attempt of the same post, or a failed post (usually deleted and
+   * reposted) with identical content on the same channel.
+   */
+  findEarlierFailure(post: {
+    id: string;
+    organizationId: string;
+    integrationId: string;
+    content: string;
+  }) {
+    return this._post.model.post.findFirst({
+      where: {
+        organizationId: post.organizationId,
+        integrationId: post.integrationId,
+        parentPostId: null,
+        error: { not: null },
+        updatedAt: { gte: dayjs.utc().subtract(14, 'day').toDate() },
+        OR: [
+          { id: post.id },
+          { id: { not: post.id }, state: 'ERROR', content: post.content },
+        ],
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true, error: true, publishDate: true, updatedAt: true },
+    });
+  }
+
+  /** Marks a superseded failure resolved so later publishes don't claim it. */
+  markFailureResolved(id: string) {
+    return this._post.model.post.update({
+      where: { id },
+      data: { error: null },
     });
   }
 

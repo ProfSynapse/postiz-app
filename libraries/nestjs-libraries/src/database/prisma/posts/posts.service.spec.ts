@@ -5,7 +5,15 @@ jest.mock('@gitroom/nestjs-libraries/integrations/integration.manager', () => ({
 }));
 
 jest.mock('@gitroom/nestjs-libraries/integrations/social.abstract', () => ({
-  BadBody: class BadBody extends Error {},
+  // Same shape as the real BadBody (it is not an Error subclass).
+  BadBody: class BadBody {
+    constructor(
+      public identifier: string,
+      public json: string,
+      public body: unknown,
+      public message = ''
+    ) {}
+  },
   RefreshToken: class RefreshToken extends Error {},
 }));
 
@@ -573,5 +581,140 @@ describe('PostsService duplicate publish guard', () => {
 
     await expect(service.post('post-1')).rejects.toThrow('boom');
     expect(releasePostPublishLock).toHaveBeenCalledWith('post-1', 'lock-token');
+  });
+});
+
+describe('PostsService publish notification emails', () => {
+  function setup(publish: jest.Mock, earlierFailure: unknown = null) {
+    const built = buildService({
+      postRepository: {
+        updatePost: jest.fn(),
+        findEarlierFailure: jest.fn().mockResolvedValue(earlierFailure),
+        markFailureResolved: jest.fn(),
+      },
+    });
+    const integration = {
+      id: 'li-integration',
+      organizationId: 'org-a',
+      internalId: 'person',
+      providerIdentifier: 'linkedin',
+      name: 'Joseph Rosenbaum, MSW',
+      token: 'test-access',
+      tokenExpiration: new Date('2058-01-01'),
+      disabled: false,
+      refreshNeeded: false,
+    };
+    const row = {
+      id: 'li-post',
+      organizationId: 'org-a',
+      integrationId: 'li-integration',
+      integration,
+      state: 'QUEUE',
+      content: 'I use OpenRouter because model choice changes too quickly.',
+      image: '[]',
+      settings: '{}',
+      publishDate: new Date('2026-10-14T15:00:00Z'),
+    };
+    Object.assign(built.service, {
+      _integrationManager: {
+        getSocialIntegration: () => ({
+          identifier: 'linkedin',
+          editor: 'normal',
+          post: publish,
+        }),
+      },
+      _refreshIntegrationService: { refresh: jest.fn() },
+      _webhookService: { digestWebhooks: jest.fn() },
+    });
+    jest
+      .spyOn(built.service, 'getPostsRecursively')
+      .mockResolvedValue([row] as any);
+    jest.spyOn(built.service, 'updateTags').mockResolvedValue([row] as any);
+    jest.spyOn(built.service as any, 'updateMedia').mockResolvedValue([]);
+    jest.spyOn(built.service as any, 'checkPlugs').mockResolvedValue(undefined);
+    jest
+      .spyOn(built.service as any, 'checkInternalPlug')
+      .mockResolvedValue(undefined);
+    return built;
+  }
+
+  const published = () =>
+    jest.fn().mockResolvedValue([
+      {
+        id: 'li-post',
+        postId: 'urn:li:share:1',
+        releaseURL: 'https://www.linkedin.com/feed/update/urn:li:share:1',
+      },
+    ]);
+
+  const notification = (built: ReturnType<typeof setup>, includes: string) =>
+    built.notificationService.inAppNotification.mock.calls.find((call) =>
+      String(call[1]).includes(includes)
+    );
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it('emails the reason when publishing throws an ordinary error', async () => {
+    const built = setup(
+      jest
+        .fn()
+        .mockRejectedValue(
+          new Error('LinkedIn video was not ready after 5 minutes; no post was created')
+        )
+    );
+
+    await built.service.post('li-post');
+
+    const call = notification(built, 'Error posting on linkedin');
+    expect(call).toBeDefined();
+    expect(call![2]).toContain(
+      'Reason: LinkedIn video was not ready after 5 minutes; no post was created'
+    );
+    expect(call![2]).toContain('2026-10-14 15:00 UTC');
+    expect(call![2]).toContain('Post: "I use OpenRouter');
+    expect(call![3]).toBe(true); // emailed
+    expect(call![5]).toBe('fail');
+  });
+
+  it('says a publish resolves an earlier failed attempt', async () => {
+    const built = setup(published(), {
+      id: 'old-failed-post',
+      error: JSON.stringify({ message: '502 Server Error: try again later' }),
+      updatedAt: new Date('2026-10-14T15:30:00Z'),
+    });
+
+    await built.service.post('li-post');
+
+    const call = notification(built, 'has been published');
+    expect(call![1]).toBe(
+      'Your post has been published on Linkedin (earlier error resolved)'
+    );
+    expect(call![2]).toContain(
+      'This resolves the earlier failed attempt on 2026-10-14 15:30 UTC: 502 Server Error: try again later'
+    );
+    expect(built.postRepository.markFailureResolved).toHaveBeenCalledWith(
+      'old-failed-post'
+    );
+  });
+
+  it('keeps the plain success email when nothing failed before', async () => {
+    const built = setup(published());
+
+    await built.service.post('li-post');
+
+    const call = notification(built, 'has been published');
+    expect(call![1]).toBe('Your post has been published on Linkedin');
+    expect(call![2]).not.toContain('resolves');
+    expect(built.postRepository.markFailureResolved).not.toHaveBeenCalled();
+  });
+
+  it('still publishes when the earlier-failure lookup fails', async () => {
+    const built = setup(published());
+    built.postRepository.findEarlierFailure.mockRejectedValue(new Error('db'));
+
+    await built.service.post('li-post');
+
+    expect(built.postRepository.updatePost).toHaveBeenCalled();
+    expect(notification(built, 'has been published')).toBeDefined();
   });
 });
