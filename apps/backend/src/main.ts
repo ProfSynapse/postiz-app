@@ -1,3 +1,12 @@
+// Start the boot watchdog before anything heavy loads (see boot.watchdog.ts).
+// The backend stalls during module loading like workers and cron; when it
+// does, nginx answers 502 and the deploy healthcheck fails. The timeouts in
+// start() cannot help then: they run on the blocked event loop. The deadline
+// leaves room for the 30-60s cold boot and a restart within Railway's 5
+// minute healthcheck window.
+import { startBootWatchdog } from '@gitroom/nestjs-libraries/boot/boot.watchdog';
+const boot = startBootWatchdog('backend', 150_000);
+
 import { initializeSentry } from '@gitroom/nestjs-libraries/sentry/initialize.sentry';
 initializeSentry('backend', true);
 
@@ -14,6 +23,8 @@ import { NestFactory } from '@nestjs/core';
 import { SubscriptionExceptionFilter } from '@gitroom/backend/services/auth/permissions/subscription.exception';
 import { HttpExceptionFilter } from '@gitroom/nestjs-libraries/services/exception.filter';
 import { ConfigurationChecker } from '@gitroom/helpers/configuration/configuration.checker';
+
+boot.mark('modules loaded');
 
 const MCP_STARTUP_TIMEOUT_MS = 30_000;
 const BACKEND_STARTUP_TIMEOUT_MS = 180_000;
@@ -75,6 +86,7 @@ async function start() {
     }),
     BACKEND_STARTUP_TIMEOUT_MS
   );
+  boot.mark('nest created');
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -100,6 +112,7 @@ async function start() {
     app.listen(port),
     BACKEND_STARTUP_TIMEOUT_MS
   );
+  boot.mark('listening');
 
   checkConfiguration(); // Do this last, so that users will see obvious issues at the end of the startup log without having to scroll up.
 
