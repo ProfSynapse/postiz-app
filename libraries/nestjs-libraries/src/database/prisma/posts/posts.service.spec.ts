@@ -19,7 +19,31 @@ jest.mock('@gitroom/nestjs-libraries/upload/upload.factory', () => ({
   },
 }));
 
+jest.mock(
+  '@gitroom/nestjs-libraries/database/prisma/posts/post.publish.lock',
+  () => ({
+    acquirePostPublishLock: jest.fn(async () => 'lock-token'),
+    releasePostPublishLock: jest.fn(async () => undefined),
+  })
+);
+
 import { PostsService } from './posts.service';
+import {
+  acquirePostPublishLock,
+  releasePostPublishLock,
+} from '@gitroom/nestjs-libraries/database/prisma/posts/post.publish.lock';
+
+// restoreAllMocks in the suites below strips factory implementations.
+beforeEach(() => {
+  jest
+    .mocked(acquirePostPublishLock)
+    .mockReset()
+    .mockImplementation(async () => 'lock-token');
+  jest
+    .mocked(releasePostPublishLock)
+    .mockReset()
+    .mockImplementation(async () => undefined);
+});
 
 function buildService(
   overrides: {
@@ -471,5 +495,83 @@ describe('YouTube publication checkpoints', () => {
     expect(x.refresh).toHaveBeenCalledTimes(1);
     expect(x.postRepository.updatePost).not.toHaveBeenCalled();
     expect(x.digest).not.toHaveBeenCalled();
+  });
+});
+
+describe('PostsService duplicate publish guard', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  function linkedInPost(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'post-1',
+      organizationId: 'org-1',
+      state: 'QUEUE',
+      intervalInDays: null,
+      integration: {
+        refreshNeeded: false,
+        disabled: false,
+        providerIdentifier: 'linkedin',
+        name: 'Joseph Rosenbaum',
+      },
+      ...overrides,
+    };
+  }
+
+  it('skips a post another worker is already publishing', async () => {
+    const { service } = buildService();
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    jest.mocked(acquirePostPublishLock).mockResolvedValueOnce(null);
+    const load = jest.spyOn(service, 'getPostsRecursively');
+    const postSocial = jest.spyOn(service as any, 'postSocial');
+
+    await service.post('post-1');
+
+    expect(load).not.toHaveBeenCalled();
+    expect(postSocial).not.toHaveBeenCalled();
+    expect(releasePostPublishLock).not.toHaveBeenCalled();
+  });
+
+  it('does not publish a post that is already published', async () => {
+    const { service, postRepository } = buildService();
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    jest
+      .spyOn(service, 'getPostsRecursively')
+      .mockResolvedValue([linkedInPost({ state: 'PUBLISHED' })] as any);
+    const postSocial = jest.spyOn(service as any, 'postSocial');
+
+    await service.post('post-1');
+
+    expect(postSocial).not.toHaveBeenCalled();
+    expect(postRepository.changeState).not.toHaveBeenCalled();
+    expect(releasePostPublishLock).toHaveBeenCalledWith('post-1', 'lock-token');
+  });
+
+  it('still republishes a recurring post', async () => {
+    const { service } = buildService();
+    jest
+      .spyOn(service, 'getPostsRecursively')
+      .mockResolvedValue([
+        linkedInPost({ state: 'PUBLISHED', intervalInDays: 7 }),
+      ] as any);
+    const postSocial = jest
+      .spyOn(service as any, 'postSocial')
+      .mockResolvedValue({ postId: 'li-1', releaseURL: 'https://li/1' });
+
+    await service.post('post-1');
+
+    expect(postSocial).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the lock when publishing throws', async () => {
+    const { service } = buildService();
+    jest.spyOn(service, 'getPostsRecursively').mockResolvedValue([
+      linkedInPost(),
+    ] as any);
+    jest
+      .spyOn(service as any, 'publishPost')
+      .mockRejectedValue(new Error('boom'));
+
+    await expect(service.post('post-1')).rejects.toThrow('boom');
+    expect(releasePostPublishLock).toHaveBeenCalledWith('post-1', 'lock-token');
   });
 });

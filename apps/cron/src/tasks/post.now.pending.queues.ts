@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PostsService } from '@gitroom/nestjs-libraries/database/prisma/posts/posts.service';
 import { BullMqClient } from '@gitroom/nestjs-libraries/bull-mq-transport-new/client';
+import { isPostPublishing } from '@gitroom/nestjs-libraries/database/prisma/posts/post.publish.lock';
 import dayjs from 'dayjs';
 
 @Injectable()
@@ -23,6 +24,9 @@ export class PostNowPendingQueues {
             job && typeof job.timestamp === 'number'
               ? dayjs(job.timestamp + (job.delay || 0))
               : dayjs(p.publishDate);
+          // A slow provider upload keeps the post in QUEUE for minutes; it
+          // is in flight, not overdue.
+          const publishing = await isPostPublishing(p.id);
 
           return {
             id: p.id,
@@ -30,9 +34,10 @@ export class PostNowPendingQueues {
             job,
             state,
             isStale:
-              state === 'missing' ||
-              (['delayed', 'waiting'].includes(state) &&
-                dueAt.isBefore(dayjs())),
+              !publishing &&
+              (state === 'missing' ||
+                (['delayed', 'waiting'].includes(state) &&
+                  dueAt.isBefore(dayjs()))),
           };
         })
       )
