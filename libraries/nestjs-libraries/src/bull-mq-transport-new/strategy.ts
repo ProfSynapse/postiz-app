@@ -1,5 +1,6 @@
 import { CustomTransportStrategy, Server } from '@nestjs/microservices';
 import { Queue, Worker } from 'bullmq';
+import { lastValueFrom } from 'rxjs';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 
 export class BullMqServer extends Server implements CustomTransportStrategy {
@@ -25,13 +26,20 @@ export class BullMqServer extends Server implements CustomTransportStrategy {
               await handler(job.data.payload, job)
             );
 
-            this.send(stream$, (packet) => {
-              if (packet.err) {
-                return job.discard();
-              }
-
-              return true;
-            });
+            // Nest event handlers return a lazy Observable: subscribing starts
+            // the work. Subscribe exactly once and await it, so the job stays
+            // "active" until the handler finishes. Completing early let the
+            // overdue-post cron see a missing job mid-upload and requeue it,
+            // publishing the same post several times.
+            try {
+              await lastValueFrom(stream$, { defaultValue: undefined });
+            } catch (err) {
+              console.error(
+                `[BullMQ] handler error for job ${job.id} on queue "${pattern}"`,
+                err
+              );
+              job.discard();
+            }
           },
           {
             maxStalledCount: 10,

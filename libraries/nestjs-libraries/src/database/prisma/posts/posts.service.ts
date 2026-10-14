@@ -24,6 +24,10 @@ import {
   RefreshToken,
 } from '@gitroom/nestjs-libraries/integrations/social.abstract';
 import { BullMqClient } from '@gitroom/nestjs-libraries/bull-mq-transport-new/client';
+import {
+  acquirePostPublishLock,
+  releasePostPublishLock,
+} from '@gitroom/nestjs-libraries/database/prisma/posts/post.publish.lock';
 import { timer } from '@gitroom/helpers/utils/timer';
 import {
   AuthTokenDetails,
@@ -366,9 +370,33 @@ export class PostsService {
   }
 
   async post(id: string) {
+    // One publish per post at a time, whatever queued it (scheduler, overdue
+    // cron, a stalled-job retry). Claim the lock before reading state so a
+    // run that finished just before this one is seen as PUBLISHED below.
+    const lockToken = await acquirePostPublishLock(id);
+    if (!lockToken) {
+      console.warn(`Skipping post ${id}; another worker is publishing it`);
+      return;
+    }
+
+    try {
+      return await this.publishPost(id);
+    } finally {
+      await releasePostPublishLock(id, lockToken);
+    }
+  }
+
+  private async publishPost(id: string) {
     const allPosts = await this.getPostsRecursively(id, true);
     const [firstPost, ...morePosts] = allPosts;
     if (!firstPost) {
+      return;
+    }
+
+    // Recurring posts are re-emitted after they publish; anything else that
+    // is already published is a duplicate delivery.
+    if (firstPost.state === 'PUBLISHED' && !firstPost.intervalInDays) {
+      console.warn(`Skipping post ${id}; it is already published`);
       return;
     }
 
