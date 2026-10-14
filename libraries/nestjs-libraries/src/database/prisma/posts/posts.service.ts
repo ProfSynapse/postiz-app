@@ -51,6 +51,10 @@ dayjs.extend(utc);
 import * as Sentry from '@sentry/nestjs';
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
 import {
+  describePublishError,
+  describeStoredError,
+} from '@gitroom/nestjs-libraries/database/prisma/posts/publish.error.describe';
+import {
   PublicPostDetailsDto,
   parseStoredJson,
   mediaReferences,
@@ -452,7 +456,10 @@ export class PostsService {
         await this._notificationService.inAppNotification(
           firstPost.organizationId,
           `Error posting on ${firstPost.integration?.providerIdentifier} for ${firstPost?.integration?.name}`,
-          `An error occurred while posting on ${firstPost.integration?.providerIdentifier}`,
+          this.failureMessage(
+            firstPost,
+            'The platform did not return a post ID or link.'
+          ),
           true,
           false,
           'fail'
@@ -467,18 +474,16 @@ export class PostsService {
         err,
         allPosts
       );
-      if (err instanceof BadBody) {
-        await this._notificationService.inAppNotification(
-          firstPost.organizationId,
-          `Error posting on ${firstPost.integration?.providerIdentifier} for ${firstPost?.integration?.name}`,
-          `An error occurred while posting on ${
-            firstPost.integration?.providerIdentifier
-          }${err?.message ? `: ${err?.message}` : ``}`,
-          true,
-          false,
-          'fail'
-        );
+      await this._notificationService.inAppNotification(
+        firstPost.organizationId,
+        `Error posting on ${firstPost.integration?.providerIdentifier} for ${firstPost?.integration?.name}`,
+        this.failureMessage(firstPost, describePublishError(err)),
+        true,
+        false,
+        'fail'
+      );
 
+      if (err instanceof BadBody) {
         console.error(
           '[Error] posting on',
           firstPost.integration?.providerIdentifier,
@@ -490,6 +495,38 @@ export class PostsService {
       }
 
       return;
+    }
+  }
+
+  private failureMessage(post: PostWithConditionals, reason: string) {
+    const provider = post.integration?.providerIdentifier;
+    const preview = (post.content || '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return [
+      `Your post scheduled for ${dayjs
+        .utc(post.publishDate)
+        .format('YYYY-MM-DD HH:mm [UTC]')} was not published on ${provider} (${post.integration?.name}).`,
+      `Reason: ${reason}`,
+      preview
+        ? `Post: "${preview.length > 100 ? `${preview.slice(0, 99)}…` : preview}"`
+        : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+  }
+
+  private async findEarlierFailure(post?: Post) {
+    if (!post) {
+      return null;
+    }
+    try {
+      return await this._postRepository.findEarlierFailure(post);
+    } catch (err) {
+      // Never block a publish over the resolution note.
+      this.logger.warn(`Could not look up earlier failures of ${post.id}`);
+      return null;
     }
   }
 
@@ -552,6 +589,9 @@ export class PostsService {
     }
 
     const newPosts = await this.updateTags(integration.organizationId, posts);
+    // Look this up before publishing: LinkedIn checkpoints persist the post,
+    // which clears its stored error, while it is still publishing.
+    const earlierFailure = await this.findEarlierFailure(posts[0]);
     const checkpointLinkedIn = ['linkedin', 'linkedin-page'].includes(
       integration.providerIdentifier
     );
@@ -638,17 +678,27 @@ export class PostsService {
       }
 
       try {
+        const resolvedNote = earlierFailure
+          ? ` This resolves the earlier failed attempt on ${dayjs
+              .utc(earlierFailure.updatedAt)
+              .format('YYYY-MM-DD HH:mm [UTC]')}: ${describeStoredError(
+              earlierFailure.error
+            )}`
+          : '';
         await this._notificationService.inAppNotification(
           integration.organizationId,
           `Your post has been published on ${capitalize(
             integration.providerIdentifier
-          )}`,
+          )}${earlierFailure ? ' (earlier error resolved)' : ''}`,
           `Your post has been published on ${capitalize(
             integration.providerIdentifier
-          )} at ${publishedPosts[0].releaseURL}`,
+          )} at ${publishedPosts[0].releaseURL}.${resolvedNote}`,
           true,
           true
         );
+        if (earlierFailure && earlierFailure.id !== posts[0]?.id) {
+          await this._postRepository.markFailureResolved(earlierFailure.id);
+        }
 
         await this._webhookService.digestWebhooks(
           integration.organizationId,
@@ -723,11 +773,13 @@ export class PostsService {
         throw err;
       }
 
+      // Keep the message: JSON.stringify(new Error(...)) is '{}', which
+      // left failure emails and Post.error with no reason at all.
       throw new BadBody(
         integration.providerIdentifier,
         JSON.stringify(err),
         {} as any,
-        ''
+        err instanceof Error ? err.message : ''
       );
     }
   }
