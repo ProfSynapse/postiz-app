@@ -2,11 +2,13 @@ import { CustomTransportStrategy, Server } from '@nestjs/microservices';
 import { Queue, Worker } from 'bullmq';
 import { lastValueFrom } from 'rxjs';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
+import { startWorkerHeartbeat } from '@gitroom/nestjs-libraries/bull-mq-transport-new/worker.heartbeat';
 
 export class BullMqServer extends Server implements CustomTransportStrategy {
   queues: Map<string, Queue>;
   workers: Worker[] = [];
   private healthInterval?: NodeJS.Timeout;
+  private heartbeatInterval?: NodeJS.Timeout;
 
   /**
    * This method is triggered when you run "app.listen()".
@@ -93,6 +95,7 @@ export class BullMqServer extends Server implements CustomTransportStrategy {
       }
     }, 30000);
     this.healthInterval.unref();
+    this.heartbeatInterval = startWorkerHeartbeat(this.workers);
 
     callback();
   }
@@ -103,6 +106,9 @@ export class BullMqServer extends Server implements CustomTransportStrategy {
   close() {
     if (this.healthInterval) {
       clearInterval(this.healthInterval);
+    }
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
     }
     this.workers.map((worker) => worker.close());
     this.queues.forEach((queue) => queue.close());

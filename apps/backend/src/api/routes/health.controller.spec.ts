@@ -30,6 +30,12 @@ jest.mock(
   { virtual: false }
 );
 
+const workerAliveMock = jest.fn();
+jest.mock(
+  '@gitroom/nestjs-libraries/bull-mq-transport-new/worker.heartbeat',
+  () => ({ isWorkerAlive: workerAliveMock })
+);
+
 import { Test, TestingModule } from '@nestjs/testing';
 import { HttpException, HttpStatus } from '@nestjs/common';
 import { HealthController } from './health.controller';
@@ -59,6 +65,8 @@ describe('HealthController /health/deep', () => {
 
   beforeEach(async () => {
     pingMock.mockReset();
+    workerAliveMock.mockReset();
+    workerAliveMock.mockResolvedValue(true);
     prismaStub = new PrismaServiceStub();
 
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -72,7 +80,7 @@ describe('HealthController /health/deep', () => {
     controller = moduleRef.get<HealthController>(HealthController);
   });
 
-  it('returns {redis:ok, postgres:ok, bullmq:ok} when all probes succeed', async () => {
+  it('returns {redis:ok, postgres:ok, bullmq:ok, workers:ok} when all probes succeed', async () => {
     pingMock.mockResolvedValue('PONG');
 
     const result = await controller.deep();
@@ -81,6 +89,7 @@ describe('HealthController /health/deep', () => {
       redis: 'ok',
       postgres: 'ok',
       bullmq: 'ok',
+      workers: 'ok',
     });
     // BullMQ probe and Redis probe both ping the shared ioRedis instance.
     expect(pingMock).toHaveBeenCalledTimes(2);
@@ -168,5 +177,44 @@ describe('HealthController /health/deep', () => {
     expect(joined).not.toMatch(/password/i);
     // No basic-auth-style "user:pass@host" tokens (rough heuristic).
     expect(joined).not.toMatch(/redis:\/\/[^@]+:[^@]+@/);
+  });
+  it('returns 503 with workers:fail when this container has no workers heartbeat', async () => {
+    pingMock.mockResolvedValue('PONG');
+    workerAliveMock.mockResolvedValue(false);
+
+    let caught: HttpException | undefined;
+    try {
+      await controller.deep();
+    } catch (err) {
+      caught = err as HttpException;
+    }
+
+    expect(caught?.getStatus()).toBe(HttpStatus.SERVICE_UNAVAILABLE);
+    const body = caught?.getResponse() as Record<string, unknown> & {
+      errors: string[];
+    };
+    expect(body).toMatchObject({
+      redis: 'ok',
+      postgres: 'ok',
+      bullmq: 'ok',
+      workers: 'fail',
+    });
+    expect(body.errors).toContain('workers: no workers heartbeat');
+  });
+
+  it('reports workers:fail when the heartbeat cannot be read', async () => {
+    pingMock.mockResolvedValue('PONG');
+    workerAliveMock.mockResolvedValue(null);
+
+    let caught: HttpException | undefined;
+    try {
+      await controller.deep();
+    } catch (err) {
+      caught = err as HttpException;
+    }
+
+    const body = caught?.getResponse() as { workers: string; errors: string[] };
+    expect(body.workers).toBe('fail');
+    expect(body.errors).toContain('workers: workers heartbeat unreadable');
   });
 });

@@ -3,6 +3,7 @@ import { ApiTags } from '@nestjs/swagger';
 import { PrismaService } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 import { BullMqClient } from '@gitroom/nestjs-libraries/bull-mq-transport-new/client';
+import { isWorkerAlive } from '@gitroom/nestjs-libraries/bull-mq-transport-new/worker.heartbeat';
 
 const PROBE_TIMEOUT_MS = 3000;
 
@@ -12,6 +13,7 @@ interface DeepHealthBody {
   redis: ProbeStatus;
   postgres: ProbeStatus;
   bullmq: ProbeStatus;
+  workers: ProbeStatus;
   errors?: string[];
 }
 
@@ -67,11 +69,13 @@ export class HealthController {
    */
   @Get('/deep')
   async deep(): Promise<DeepHealthBody> {
-    const [redisResult, postgresResult, bullmqResult] = await Promise.all([
-      this.probeRedis(),
-      this.probePostgres(),
-      this.probeBullMq(),
-    ]);
+    const [redisResult, postgresResult, bullmqResult, workersResult] =
+      await Promise.all([
+        this.probeRedis(),
+        this.probePostgres(),
+        this.probeBullMq(),
+        this.probeWorkers(),
+      ]);
 
     const errors: string[] = [];
     if (redisResult.status === 'fail') {
@@ -83,11 +87,15 @@ export class HealthController {
     if (bullmqResult.status === 'fail') {
       errors.push(`bullmq: ${bullmqResult.error}`);
     }
+    if (workersResult.status === 'fail') {
+      errors.push(`workers: ${workersResult.error}`);
+    }
 
     const body: DeepHealthBody = {
       redis: redisResult.status,
       postgres: postgresResult.status,
       bullmq: bullmqResult.status,
+      workers: workersResult.status,
     };
 
     if (errors.length > 0) {
@@ -142,5 +150,24 @@ export class HealthController {
     } catch (err) {
       return { status: 'fail', error: describeError(err) };
     }
+  }
+
+  /**
+   * Workers probe: this container's workers process must have booted and
+   * written its heartbeat. Without it a deploy whose workers stalled during
+   * boot passes the healthcheck and silently stops publishing posts.
+   */
+  private async probeWorkers(): Promise<{ status: ProbeStatus; error?: string }> {
+    const alive = await withTimeout('workers', isWorkerAlive(), PROBE_TIMEOUT_MS).catch(
+      () => null
+    );
+    if (alive) {
+      return { status: 'ok' };
+    }
+    return {
+      status: 'fail',
+      error:
+        alive === false ? 'no workers heartbeat' : 'workers heartbeat unreadable',
+    };
   }
 }
