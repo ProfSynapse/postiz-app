@@ -56,6 +56,9 @@ export interface AnalyticsData {
   // True for ratio/average series (e.g. average view duration) that must not be
   // summed across days.
   average?: boolean;
+  // True for a lifetime-to-date total read once (dated the day it was read)
+  // rather than a daily value. Never add it to daily points of the same label.
+  lifetime?: boolean;
 }
 
 export type GenerateAuthUrlResponse = {

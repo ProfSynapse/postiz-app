@@ -427,10 +427,7 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
     }
   }
 
-  async fetchPageInformation(
-    accessToken: string,
-    data: { id: string }
-  ) {
+  async fetchPageInformation(accessToken: string, data: { id: string }) {
     const { client, youtube } = clientAndYoutube();
     client.setCredentials({ access_token: accessToken });
     const youtubeClient = youtube(client);
@@ -600,10 +597,7 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
         // S12: tolerate captionExists (idempotent re-upload) as soft-success.
         // S14: any other caption error is logged and swallowed.
         const message = this.captionErrorMessage(err);
-        console.error(
-          'YouTube caption upload failed (non-fatal):',
-          message
-        );
+        console.error('YouTube caption upload failed (non-fatal):', message);
       }
     }
 
@@ -749,22 +743,42 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
     const endDate = dayjs().format('YYYY-MM-DD');
     const startDate = dayjs().subtract(date, 'day').format('YYYY-MM-DD');
 
+    const isUnauthorized = (err: any) =>
+      err?.response?.status === 401 || err?.code === 401;
+    // Expired or revoked token: checkPostAnalytics refreshes it and retries
+    // once (upstream 96b78476). Nothing from the response is forwarded.
+    const refreshToken = () => new RefreshToken(this.identifier, '{}', '{}');
+
     try {
       const { client, youtube, youtubeAnalytics } = clientAndYoutube();
       client.setCredentials({ access_token: accessToken });
 
-      const { data } = await youtubeAnalytics(client).reports.query({
-        ids: 'channel==MINE',
-        startDate,
-        endDate,
-        metrics: YOUTUBE_POST_METRICS.map((m) => m.metric).join(','),
-        dimensions: 'day',
-        filters: `video==${postId}`,
-        sort: 'day',
-      });
+      // A failing Analytics query (403 on connections without the
+      // yt-analytics scope, a channel==MINE mismatch, quota) still falls
+      // through to the videos.list snapshot, as upstream would return.
+      let data: any;
+      try {
+        ({ data } = await youtubeAnalytics(client).reports.query({
+          ids: 'channel==MINE',
+          startDate,
+          endDate,
+          metrics: YOUTUBE_POST_METRICS.map((m) => m.metric).join(','),
+          dimensions: 'day',
+          filters: `video==${postId}`,
+          sort: 'day',
+        }));
+      } catch (err: any) {
+        if (isUnauthorized(err)) throw refreshToken();
+        console.error(
+          '[youtube] post analytics report failed:',
+          err?.response?.status || err?.code || 'unknown error'
+        );
+      }
 
-      const columns = (data?.columnHeaders || []).map((p) => p.name || '');
-      const rows = (data?.rows || []).map((row) =>
+      const columns: string[] = (data?.columnHeaders || []).map(
+        (p: any) => p.name || ''
+      );
+      const rows = (data?.rows || []).map((row: any[]) =>
         columns.reduce((acc, column, index) => {
           acc[column] = row[index];
           return acc;
@@ -778,14 +792,16 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
           label,
           percentageChange: 0,
           ...(average ? { average: true } : {}),
-          data: rows.map((row) => ({
+          data: rows.map((row: Record<string, any>) => ({
             total: String(row[metric] ?? 0),
             date: String(row.day),
           })),
         }));
       }
 
-      // No Analytics rows yet (new video): upstream's videos.list snapshot.
+      // No Analytics rows yet (new video) or the report failed: upstream's
+      // videos.list snapshot. These are lifetime totals, not one day's
+      // values, so they carry `lifetime: true`.
       const response = await youtube(client).videos.list({
         part: ['statistics'],
         id: [postId],
@@ -805,14 +821,12 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
         .map(([label, value]) => ({
           label,
           percentageChange: 0,
+          lifetime: true,
           data: [{ total: String(value), date: endDate }],
         }));
     } catch (err: any) {
-      // Expired or revoked token: checkPostAnalytics refreshes it and retries
-      // once (upstream 96b78476). Nothing from the response is forwarded.
-      if (err?.response?.status === 401 || err?.code === 401) {
-        throw new RefreshToken(this.identifier, '{}', '{}');
-      }
+      if (err instanceof RefreshToken) throw err;
+      if (isUnauthorized(err)) throw refreshToken();
       console.error(
         '[youtube] post analytics failed:',
         err?.response?.status || err?.code || 'unknown error'

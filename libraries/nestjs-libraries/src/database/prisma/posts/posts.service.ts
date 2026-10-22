@@ -124,6 +124,7 @@ export function normalizePostAnalytics(rows: unknown): AnalyticsData[] {
         label: row.label,
         percentageChange: Number(row.percentageChange) || 0,
         ...(row.average ? { average: true } : {}),
+        ...(row.lifetime ? { lifetime: true } : {}),
         data,
       },
     ];
@@ -255,6 +256,11 @@ export class PostsService {
       !integration ||
       integration.deletedAt ||
       integration.disabled ||
+      // A channel waiting for the owner to reconnect would only fail again,
+      // and every failed refresh sends a "Reconnect" email. The publish path
+      // skips these channels too.
+      integration.refreshNeeded ||
+      integration.inBetweenSteps ||
       integration.type !== 'social'
     ) {
       return [];
@@ -351,7 +357,13 @@ export class PostsService {
     }
 
     const data = await pending.catch((): null => null);
-    if (!data) return false;
+    if (!data) {
+      // The failed refresh already marked the channel for reconnection (and
+      // emailed the owner). Mark the shared object too, so the rest of the
+      // batch skips the channel instead of refreshing it again.
+      integration.refreshNeeded = true;
+      return false;
+    }
     integration.token = data.accessToken;
     if (data.expiresIn) {
       integration.tokenExpiration = dayjs()

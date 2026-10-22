@@ -16,6 +16,11 @@ without per-post insights return `[]` (never an error).
 Same route and response as upstream: an array of
 `{ label, percentageChange, data: [{ date: 'YYYY-MM-DD', total: '<string>' }] }`.
 Series with `average: true` are ratios/averages and must not be summed.
+Series with `lifetime: true` hold one lifetime-to-date total dated the day it
+was read, not a daily value: replace the previous reading instead of adding to
+it. YouTube's daily series never carry it; its `videos.list` fallback does, so
+the same label (e.g. Views) can switch from lifetime to daily once YouTube
+Analytics has rows.
 
 ### `GET /public/v1/analytics/posts?ids=a,b,c&date=N`
 
@@ -23,6 +28,10 @@ Fork-only batch route. `ids` is comma-separated and/or repeated; 1-20 unique
 ids of `[A-Za-z0-9_-]`, otherwise `400`. Returns `{ [postId]: AnalyticsData[] }`
 with one key per requested id. Posts are loaded in one query and fetched with
 a concurrency of 4; an expired channel token is refreshed once per channel.
+If that refresh fails the channel is marked for reconnection (one "Reconnect"
+notification) and the rest of the batch skips it. Channels already marked
+`refreshNeeded` or still `inBetweenSteps` return `[]` without calling the
+provider, as the publish path does.
 
 `date` is the look-back in days (default 30, clamped to 1-365). Only YouTube
 uses it; the other providers return lifetime totals dated today.
@@ -49,12 +58,16 @@ batch route's `/posts` suffix can't land in the posts bucket
 
 | Provider | Source | Labels |
 | --- | --- | --- |
-| YouTube | YouTube Analytics `reports.query`, `filters=video==<id>`, `dimensions=day` | Views, Estimated Minutes Watched, Average View Duration*, Average View Percentage*, Likes, Comments, Shares, Subscribers Gained (daily). Until Analytics has rows (1-3 days), upstream's `videos.list` lifetime snapshot: Views, Likes, Comments |
+| YouTube | YouTube Analytics `reports.query`, `filters=video==<id>`, `dimensions=day` | Views, Estimated Minutes Watched, Average View Duration*, Average View Percentage*, Likes, Comments, Shares, Subscribers Gained (daily). Until Analytics has rows (1-3 days), or when the report fails with anything but 401 (e.g. 403 missing scope, quota), upstream's `videos.list` lifetime snapshot: Views, Likes, Comments (`lifetime: true`) |
 | Instagram (Facebook login and Instagram login) | `/{media-id}/insights` (v21.0), metric set by `media_product_type` | Views, Reach, Saves, Likes, Comments, Shares, Total Interactions; Reels add Average Watch Time (ms)*; Stories: Views, Reach, Shares, Total Interactions |
 | Facebook Page feed post | `/{page_post}/insights` (v23.0) + `?fields=shares,comments.summary(true)` | Reach (`post_total_media_view_unique`), Views (`post_media_view`), Clicks, Reactions, Comments, Shares |
 | Facebook Page video | `/{video-id}/video_insights` (v23.0) | Views, Plays, Reactions, Engagement |
 | LinkedIn Page | `organizationalEntityShareStatistics` with `shares=List(...)` or `ugcPosts=List(...)` (lifetime) | Impressions, Unique Impressions, Clicks, Likes, Comments, Shares, Engagement*; socialActions likes/comments when LinkedIn omits the post |
 
-`*` = `average: true`. No deprecated `post_impressions*` or Instagram
-`impressions`/`plays` metric is requested. A metric Meta rejects (`#100`) is
-dropped and the rest are kept.
+`*` = `average: true`. Every Instagram, Facebook and LinkedIn series is a
+lifetime total (`lifetime: true`). No deprecated `post_impressions*` or
+Instagram `impressions`/`plays` metric is requested. A metric Meta rejects
+(`#100`) is dropped and the rest are kept. Instagram story metrics under 5
+answer `#10`; those are dropped the same way. A Facebook post Meta reports as
+missing ("does not exist", subcode 33, or no `insights` edge, e.g. comment
+posts) returns `[]` without per-metric retries.

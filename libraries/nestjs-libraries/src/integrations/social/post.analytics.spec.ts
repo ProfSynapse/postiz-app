@@ -135,16 +135,19 @@ describe('per-post analytics providers', () => {
         {
           label: 'Views',
           percentageChange: 0,
+          lifetime: true,
           data: [{ total: '99', date: '2026-10-22' }],
         },
         {
           label: 'Likes',
           percentageChange: 0,
+          lifetime: true,
           data: [{ total: '5', date: '2026-10-22' }],
         },
         {
           label: 'Comments',
           percentageChange: 0,
+          lifetime: true,
           data: [{ total: '1', date: '2026-10-22' }],
         },
       ]);
@@ -157,10 +160,34 @@ describe('per-post analytics providers', () => {
       await expect(
         new YoutubeProvider().postAnalytics('c', TOKEN, 'vid', 30)
       ).rejects.toBeInstanceOf(RefreshToken);
+      expect(videosList).not.toHaveBeenCalled();
       reportsQuery.mockRejectedValueOnce({ response: { status: 403 } });
+      videosList.mockRejectedValueOnce({ response: { status: 403 } });
       await expect(
         new YoutubeProvider().postAnalytics('c', TOKEN, 'vid', 30)
       ).resolves.toEqual([]);
+      reportsQuery.mockResolvedValueOnce({ data: {} });
+      videosList.mockRejectedValueOnce({ response: { status: 401 } });
+      await expect(
+        new YoutubeProvider().postAnalytics('c', TOKEN, 'vid', 30)
+      ).rejects.toBeInstanceOf(RefreshToken);
+    });
+
+    it('falls back to the snapshot when the Analytics report fails', async () => {
+      reportsQuery.mockRejectedValueOnce({ response: { status: 403 } });
+      videosList.mockResolvedValue({
+        data: { items: [{ statistics: { viewCount: '42' } }] },
+      });
+      await expect(
+        new YoutubeProvider().postAnalytics('c', TOKEN, 'vid', 30)
+      ).resolves.toEqual([
+        {
+          label: 'Views',
+          percentageChange: 0,
+          lifetime: true,
+          data: [{ total: '42', date: '2026-10-22' }],
+        },
+      ]);
     });
   });
 
@@ -250,6 +277,54 @@ describe('per-post analytics providers', () => {
       await expect(
         new InstagramProvider().postAnalytics('acct', TOKEN, 'child', 30)
       ).resolves.toEqual([]);
+    });
+
+    it('retries story metrics one by one on (#10) and keeps the rest', async () => {
+      let insightCalls = 0;
+      global.fetch = jest.fn(async (input) => {
+        const url = new URL(String(input));
+        if (!url.pathname.endsWith('/insights'))
+          return response({ media_product_type: 'STORY' });
+        insightCalls++;
+        const metrics = url.searchParams.get('metric')!.split(',');
+        if (metrics.length > 1 || metrics[0] === 'shares')
+          return response(
+            { error: { code: 10, message: 'not enough viewers' } },
+            400
+          );
+        return response({
+          data: [{ name: metrics[0], values: [{ value: 12 }] }],
+        });
+      }) as any;
+      const result = await new InstagramProvider().postAnalytics(
+        'acct',
+        TOKEN,
+        'story',
+        30
+      );
+      expect(insightCalls).toBe(5);
+      expect(result.map((r) => r.label)).toEqual([
+        'Views',
+        'Reach',
+        'Total Interactions',
+      ]);
+      expect(result.every((r) => r.lifetime)).toBe(true);
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not retry (#10) metric by metric for feed media', async () => {
+      let insightCalls = 0;
+      global.fetch = jest.fn(async (input) => {
+        const url = new URL(String(input));
+        if (!url.pathname.endsWith('/insights'))
+          return response({ media_product_type: 'FEED' });
+        insightCalls++;
+        return response({ error: { code: 10 } }, 400);
+      }) as any;
+      await expect(
+        new InstagramProvider().postAnalytics('acct', TOKEN, 'feed', 30)
+      ).resolves.toEqual([]);
+      expect(insightCalls).toBe(1);
     });
 
     it('chooses metrics per product type', () => {
@@ -347,11 +422,13 @@ describe('per-post analytics providers', () => {
         {
           label: 'Views',
           percentageChange: 0,
+          lifetime: true,
           data: [{ total: '9', date: '2026-10-22' }],
         },
         {
           label: 'Engagement',
           percentageChange: 0,
+          lifetime: true,
           data: [{ total: '3', date: '2026-10-22' }],
         },
       ]);
@@ -383,6 +460,27 @@ describe('per-post analytics providers', () => {
         'Reactions',
       ]);
     });
+
+    it.each([
+      [{ code: 100, error_subcode: 33, message: 'Unsupported get request' }],
+      [
+        {
+          code: 100,
+          message: '(#100) Tried accessing nonexisting field (insights)',
+        },
+      ],
+      [{ code: 100, message: 'Object with ID x does not exist' }],
+    ])(
+      'makes one call for a missing post or comment post (%#)',
+      async (error) => {
+        global.fetch = jest.fn(async () => response({ error }, 400)) as any;
+        await expect(
+          new FacebookProvider().postAnalytics('page', TOKEN, '1_2_3', 30)
+        ).resolves.toEqual([]);
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+        expect(errorSpy).not.toHaveBeenCalled();
+      }
+    );
   });
 
   describe('LinkedIn Page', () => {

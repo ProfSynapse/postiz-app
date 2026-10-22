@@ -96,6 +96,7 @@ describe('Per-post analytics', () => {
   let postsModel: Record<string, jest.Mock>;
   let providers: Record<string, any>;
   let refresh: jest.Mock;
+  let disconnectChannel: jest.Mock;
   let checkAnalytics: jest.Mock;
   const env = process.env.NODE_ENV;
 
@@ -142,6 +143,7 @@ describe('Per-post analytics', () => {
       accessToken: 'fresh-token',
       expiresIn: 3600,
     }));
+    disconnectChannel = jest.fn();
     checkAnalytics = jest.fn();
     const repository = new PostsRepository(
       { model: { post: postsModel } } as any,
@@ -158,7 +160,7 @@ describe('Per-post analytics', () => {
       {} as any,
       {} as any,
       {} as any,
-      { disconnectChannel: jest.fn() } as any,
+      { disconnectChannel } as any,
       {} as any,
       {} as any,
       {} as any,
@@ -299,6 +301,72 @@ describe('Per-post analytics', () => {
     expect(refresh).toHaveBeenCalledTimes(1);
     for (const call of providers.youtube.postAnalytics.mock.calls)
       expect(call[1]).toBe('fresh-token');
+  });
+
+  it('refreshes and disconnects a failing channel once per batch', async () => {
+    const shared = channel('yt', {
+      tokenExpiration: new Date(Date.now() - 1000),
+    });
+    rows = Array.from({ length: 10 }, (_, i) =>
+      post(`expired-${i}`, { integration: shared })
+    );
+    // Facebook-style refresh: no new access token.
+    refresh.mockResolvedValue({ accessToken: '', expiresIn: 0 });
+    const ids = rows.map((r) => r.id).join(',');
+    const res = await get(`/analytics/posts?ids=${ids}`);
+    expect(res.status).toBe(200);
+    expect(Object.values(await res.json())).toEqual(rows.map(() => []));
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(disconnectChannel).toHaveBeenCalledTimes(1);
+    expect(providers.youtube.postAnalytics).not.toHaveBeenCalled();
+    // Failed results are not cached, so the next poll must not retry either
+    // once the channel is marked for reconnection.
+    shared.refreshNeeded = true;
+    await get(`/analytics/posts?ids=${ids}`);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(disconnectChannel).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips channels waiting for reconnection or setup', async () => {
+    rows = [
+      post('needs-refresh', {
+        integration: channel('r', {
+          refreshNeeded: true,
+          tokenExpiration: new Date(Date.now() - 1000),
+        }),
+      }),
+      post('between-steps', {
+        integration: channel('b', { inBetweenSteps: true }),
+      }),
+    ];
+    const res = await get('/analytics/posts?ids=needs-refresh,between-steps');
+    expect(await res.json()).toEqual({
+      'needs-refresh': [],
+      'between-steps': [],
+    });
+    expect(refresh).not.toHaveBeenCalled();
+    expect(providers.youtube.postAnalytics).not.toHaveBeenCalled();
+  });
+
+  it('passes the lifetime marker through', async () => {
+    providers.youtube.postAnalytics.mockResolvedValueOnce([
+      {
+        label: 'Views',
+        percentageChange: 0,
+        lifetime: true,
+        extra: 'dropped',
+        data: [{ date: '2026-10-22', total: 5 }],
+      },
+    ]);
+    const res = await get('/analytics/post/post-a');
+    expect(await res.json()).toEqual([
+      {
+        label: 'Views',
+        percentageChange: 0,
+        lifetime: true,
+        data: [{ date: '2026-10-22', total: '5' }],
+      },
+    ]);
   });
 
   it('retries once with a refreshed token on RefreshToken', async () => {

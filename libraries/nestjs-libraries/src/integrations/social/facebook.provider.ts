@@ -532,6 +532,9 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
         video ? 'video_insights' : 'insights',
         Object.keys(metrics)
       );
+      // Deleted posts and comment posts have no insights; their engagement
+      // fields would fail the same way.
+      if (rows === null) return [];
 
       const totals = new Map<string, number>();
       for (const row of rows) {
@@ -561,6 +564,7 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
       return [...totals].map(([label, total]) => ({
         label,
         percentageChange: 0,
+        lifetime: true,
         data: [{ total: String(total), date: today }],
       }));
     } catch (err) {
@@ -569,12 +573,17 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
     }
   }
 
+  /**
+   * Insights rows for the requested metrics, or null when the object or the
+   * edge does not exist (deleted post, comment post), since no single metric
+   * could succeed then.
+   */
   private async loadPostInsights(
     accessToken: string,
     postId: string,
     edge: 'insights' | 'video_insights',
     metrics: string[]
-  ): Promise<any[]> {
+  ): Promise<any[] | null> {
     const response = await fetch(
       `https://graph.facebook.com/${FACEBOOK_POST_INSIGHTS_VERSION}/${encodeURIComponent(
         postId
@@ -586,25 +595,32 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
     );
     const body = await response.json().catch(() => ({}));
     if (response.ok && Array.isArray(body?.data)) return body.data;
+    // Code 100 also covers "nonexisting field (insights)" and "object does
+    // not exist" (subcode 33); a per-metric retry cannot fix either.
+    if (
+      body?.error?.error_subcode === 33 ||
+      /nonexisting field|does not exist/i.test(body?.error?.message || '')
+    ) {
+      return null;
+    }
     // One invalid metric makes Meta reject the whole request (see #22): retry
     // the metrics one by one and keep the ones that succeed.
     if (body?.error?.code === 100 && metrics.length > 1) {
       const rows: any[] = [];
       for (const metric of metrics) {
         rows.push(
-          ...(await this.loadPostInsights(accessToken, postId, edge, [metric]))
+          ...((await this.loadPostInsights(accessToken, postId, edge, [
+            metric,
+          ])) ?? [])
         );
       }
       return rows;
     }
-    // Stories and posts without this edge answer "nonexisting field".
-    if (!/nonexisting field/i.test(body?.error?.message || '')) {
-      console.error(
-        `[facebook] post ${edge} metric ${
-          metrics.length === 1 ? metrics[0] : 'batch'
-        } failed: ${body?.error?.code || response.status}`
-      );
-    }
+    console.error(
+      `[facebook] post ${edge} metric ${
+        metrics.length === 1 ? metrics[0] : 'batch'
+      } failed: ${body?.error?.code || response.status}`
+    );
     return [];
   }
 

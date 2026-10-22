@@ -481,6 +481,7 @@ export class LinkedinPageProvider
             label,
             percentageChange: 0,
             ...(label === 'Engagement' ? { average: true } : {}),
+            lifetime: true,
             data: [{ total: String(value), date: today }],
           }));
       }
@@ -506,6 +507,7 @@ export class LinkedinPageProvider
         .map(([label, value]) => ({
           label,
           percentageChange: 0,
+          lifetime: true,
           data: [{ total: String(value), date: today }],
         }));
     } catch (err) {

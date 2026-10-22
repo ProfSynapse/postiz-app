@@ -861,9 +861,12 @@ export class InstagramProvider
       const media = await request('', {
         fields: 'media_type,media_product_type',
       });
-      const metrics = instagramMediaMetrics(
-        media.ok ? media.body?.media_product_type : undefined
-      );
+      const productType = media.ok ? media.body?.media_product_type : undefined;
+      const metrics = instagramMediaMetrics(productType);
+      // Story metrics under 5 answer (#10) instead of a value, failing the
+      // whole request; a per-metric retry keeps the metrics at 5 or more.
+      const retryable = (code: unknown) =>
+        code === 100 || (productType === 'STORY' && code === 10);
 
       const load = async (list: string[]): Promise<any[]> => {
         const { ok, body } = await request('/insights', {
@@ -871,12 +874,12 @@ export class InstagramProvider
         });
         if (ok && Array.isArray(body?.data)) return body.data;
         // (#100) one metric is not valid for this media: keep the others.
-        if (body?.error?.code === 100 && list.length > 1) {
+        if (retryable(body?.error?.code) && list.length > 1) {
           const rows: any[] = [];
           for (const metric of list) rows.push(...(await load([metric])));
           return rows;
         }
-        if (body?.error?.code !== 100) {
+        if (!retryable(body?.error?.code)) {
           console.error(
             `[instagram] media insights failed: ${
               body?.error?.code || 'unknown'
@@ -896,6 +899,7 @@ export class InstagramProvider
           label: INSTAGRAM_MEDIA_LABELS[metric],
           percentageChange: 0,
           ...(metric === 'ig_reels_avg_watch_time' ? { average: true } : {}),
+          lifetime: true,
           data: [{ total: String(value), date: today }],
         });
       }
