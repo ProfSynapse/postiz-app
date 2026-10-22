@@ -15,13 +15,15 @@ import { StarsListDto } from '@gitroom/nestjs-libraries/dtos/analytics/stars.lis
 import { ApiTags } from '@nestjs/swagger';
 import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.service';
 import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
+import { PostsService } from '@gitroom/nestjs-libraries/database/prisma/posts/posts.service';
 
 @ApiTags('Analytics')
 @Controller('/analytics')
 export class AnalyticsController {
   constructor(
     private _starsService: StarsService,
-    private _integrationService: IntegrationService
+    private _integrationService: IntegrationService,
+    private _postsService: PostsService
   ) {}
   @Get('/')
   async getStars(@GetOrgFromRequest() org: Organization) {
@@ -50,6 +52,15 @@ export class AnalyticsController {
     return {
       stars: await this._starsService.getStarsFilter(org.id, starsFilter),
     };
+  }
+
+  @Get('/post/:postId')
+  async getPostAnalytics(
+    @GetOrgFromRequest() org: Organization,
+    @Param('postId') postId: string,
+    @Query('date') date: string
+  ) {
+    return this._postsService.checkPostAnalytics(org.id, postId, +date);
   }
 
   @Get('/:integration')

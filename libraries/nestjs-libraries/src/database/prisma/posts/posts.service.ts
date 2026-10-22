@@ -30,9 +30,12 @@ import {
 } from '@gitroom/nestjs-libraries/database/prisma/posts/post.publish.lock';
 import { timer } from '@gitroom/helpers/utils/timer';
 import {
+  AnalyticsData,
   AuthTokenDetails,
   PostResponse,
+  SocialProvider,
 } from '@gitroom/nestjs-libraries/integrations/social/social.integrations.interface';
+import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 import { LinkedInPartialPublicationError } from '@gitroom/nestjs-libraries/integrations/social/linkedin.publication';
 import utc from 'dayjs/plugin/utc';
 import { MediaService } from '@gitroom/nestjs-libraries/database/prisma/media/media.service';
@@ -63,6 +66,69 @@ import {
   resolvePublicMedia,
   publicReleaseUrl,
 } from '@gitroom/nestjs-libraries/dtos/posts/public-post-details.dto';
+
+// Per-post analytics (public GET /analytics/post/:postId and /analytics/posts).
+export const MAX_POST_ANALYTICS_BATCH = 20;
+const POST_ANALYTICS_CONCURRENCY = 4;
+const DEFAULT_POST_ANALYTICS_DAYS = 30;
+const MAX_POST_ANALYTICS_DAYS = 365;
+
+/** Look-back window in whole days: 1..365, 30 when missing or invalid. */
+export function normalizePostAnalyticsDays(date: unknown): number {
+  const days = Math.floor(Number(date));
+  if (!Number.isFinite(days) || days < 1) return DEFAULT_POST_ANALYTICS_DAYS;
+  return Math.min(days, MAX_POST_ANALYTICS_DAYS);
+}
+
+/**
+ * `ids` for GET /public/v1/analytics/posts: comma-separated and/or repeated,
+ * deduplicated, 1..MAX_POST_ANALYTICS_BATCH ids of [A-Za-z0-9_-].
+ */
+export function parsePostAnalyticsIds(raw: unknown): string[] {
+  const values = (Array.isArray(raw) ? raw : [raw])
+    .filter((value): value is string => typeof value === 'string')
+    .flatMap((value) => value.split(','))
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const ids = [...new Set(values)];
+  if (!ids.length) {
+    throw new BadRequestException('ids is required');
+  }
+  if (ids.length > MAX_POST_ANALYTICS_BATCH) {
+    throw new BadRequestException(
+      `ids accepts at most ${MAX_POST_ANALYTICS_BATCH} post ids`
+    );
+  }
+  if (ids.some((id) => !/^[A-Za-z0-9_-]{1,64}$/.test(id))) {
+    throw new BadRequestException('ids contains an invalid post id');
+  }
+  return ids;
+}
+
+/** Enforce the public {label, percentageChange, data:[{date,total}]} shape. */
+export function normalizePostAnalytics(rows: unknown): AnalyticsData[] {
+  if (!Array.isArray(rows)) return [];
+  return rows.flatMap((row: any) => {
+    const data = (Array.isArray(row?.data) ? row.data : [])
+      .filter(
+        (point: any) =>
+          point && point.total !== undefined && point.total !== null
+      )
+      .map((point: any) => ({
+        date: String(point.date),
+        total: String(point.total),
+      }));
+    if (typeof row?.label !== 'string' || !data.length) return [];
+    return [
+      {
+        label: row.label,
+        percentageChange: Number(row.percentageChange) || 0,
+        ...(row.average ? { average: true } : {}),
+        data,
+      },
+    ];
+  });
+}
 
 type PostWithConditionals = Post & {
   integration?: Integration;
@@ -99,6 +165,200 @@ export class PostsService {
   }
   searchForMissingThreeHoursPosts() {
     return this._postRepository.searchForMissingThreeHoursPosts();
+  }
+
+  /**
+   * Analytics for one published post. Ported from upstream gitroomhq/postiz-app
+   * 5cca81e0 + 96b78476 (same name and arguments). The post must belong to
+   * `orgId` and not be deleted; posts without a releaseId, on disabled or
+   * deleted channels, or on providers without postAnalytics return [].
+   */
+  async checkPostAnalytics(
+    orgId: string,
+    postId: string,
+    date: number,
+    forceRefresh = false
+  ): Promise<AnalyticsData[]> {
+    const [post] = await this._postRepository.getPostsForAnalytics(orgId, [
+      postId,
+    ]);
+    return this.loadPostAnalytics(
+      orgId,
+      post,
+      normalizePostAnalyticsDays(date),
+      forceRefresh ? post?.integration?.token ?? '' : undefined
+    );
+  }
+
+  /**
+   * Analytics for up to MAX_POST_ANALYTICS_BATCH posts in one call, keyed by
+   * the requested post id. Unknown, foreign or deleted ids map to [].
+   */
+  async checkPostsAnalytics(
+    orgId: string,
+    ids: string[],
+    date: number
+  ): Promise<Record<string, AnalyticsData[]>> {
+    const unique = [...new Set(ids)].slice(0, MAX_POST_ANALYTICS_BATCH);
+    const days = normalizePostAnalyticsDays(date);
+    const result: Record<string, AnalyticsData[]> = Object.fromEntries(
+      unique.map((id) => [id, [] as AnalyticsData[]])
+    );
+    if (!unique.length) return result;
+
+    const posts = await this._postRepository.getPostsForAnalytics(
+      orgId,
+      unique
+    );
+    // Posts on the same channel share one integration object, so a token
+    // refreshed for one post is reused by the rest of the batch.
+    const channels = new Map<string, Integration>();
+    for (const post of posts) {
+      if (!post.integration) continue;
+      const shared = channels.get(post.integration.id) ?? post.integration;
+      channels.set(post.integration.id, shared);
+      post.integration = shared;
+    }
+
+    let next = 0;
+    await Promise.all(
+      Array.from(
+        { length: Math.min(POST_ANALYTICS_CONCURRENCY, posts.length) },
+        async () => {
+          while (next < posts.length) {
+            const post = posts[next++];
+            result[post.id] = await this.loadPostAnalytics(
+              orgId,
+              post,
+              days
+            ).catch(() => []);
+          }
+        }
+      )
+    );
+    return result;
+  }
+
+  /**
+   * @param refreshFrom set on a retry: refresh the channel token unless
+   *   another request already replaced this (stale) token.
+   */
+  private async loadPostAnalytics(
+    orgId: string,
+    post: (Post & { integration: Integration | null }) | undefined,
+    date: number,
+    refreshFrom?: string
+  ): Promise<AnalyticsData[]> {
+    const integration = post?.integration;
+    if (
+      !post?.releaseId ||
+      !integration ||
+      integration.deletedAt ||
+      integration.disabled ||
+      integration.type !== 'social'
+    ) {
+      return [];
+    }
+
+    const provider = this._integrationManager.getSocialIntegration(
+      integration.providerIdentifier
+    );
+    if (!provider?.postAnalytics) {
+      return [];
+    }
+
+    const cacheKey = `integration:${orgId}:${post.id}:${date}`;
+    if (refreshFrom === undefined) {
+      const cached = await ioRedis.get(cacheKey).catch((): null => null);
+      if (cached) {
+        return normalizePostAnalytics(JSON.parse(cached));
+      }
+    }
+
+    const mustRefresh =
+      refreshFrom !== undefined
+        ? integration.token === refreshFrom
+        : dayjs(integration.tokenExpiration).isBefore(dayjs());
+    if (
+      mustRefresh &&
+      !(await this.refreshAnalyticsToken(orgId, integration, provider))
+    ) {
+      return [];
+    }
+
+    const token = integration.token;
+    try {
+      const analytics = normalizePostAnalytics(
+        await provider.postAnalytics(
+          integration.internalId,
+          token,
+          post.releaseId,
+          date
+        )
+      );
+      const development =
+        !process.env.NODE_ENV || process.env.NODE_ENV === 'development';
+      // Keep empty results briefly so a transient provider failure is not
+      // pinned for an hour.
+      await ioRedis
+        .set(
+          cacheKey,
+          JSON.stringify(analytics),
+          'EX',
+          development ? 1 : analytics.length ? 3600 : 300
+        )
+        .catch((): null => null);
+      return analytics;
+    } catch (e) {
+      // Retry once with a refreshed token (upstream 96b78476).
+      if (e instanceof RefreshToken && refreshFrom === undefined) {
+        return this.loadPostAnalytics(orgId, post, date, token);
+      }
+      this.logger.warn(
+        `post analytics failed for provider ${integration.providerIdentifier}`
+      );
+    }
+
+    return [];
+  }
+
+  private readonly analyticsRefreshes = new Map<
+    string,
+    Promise<AuthTokenDetails | null>
+  >();
+
+  /** Refresh a channel token once even when a batch asks concurrently. */
+  private async refreshAnalyticsToken(
+    orgId: string,
+    integration: Integration,
+    provider: SocialProvider
+  ): Promise<boolean> {
+    let pending = this.analyticsRefreshes.get(integration.id);
+    if (!pending) {
+      pending = (async () => {
+        const data = await this._refreshIntegrationService.refresh(integration);
+        if (!data) return null;
+        if (!data.accessToken) {
+          await this._integrationService.disconnectChannel(orgId, integration);
+          return null;
+        }
+        if (provider.refreshWait) {
+          await timer(10000);
+        }
+        return data;
+      })().finally(() => this.analyticsRefreshes.delete(integration.id));
+      this.analyticsRefreshes.set(integration.id, pending);
+    }
+
+    const data = await pending.catch((): null => null);
+    if (!data) return false;
+    integration.token = data.accessToken;
+    if (data.expiresIn) {
+      integration.tokenExpiration = dayjs()
+        .add(data.expiresIn, 'seconds')
+        .toDate();
+    }
+    return true;
   }
 
   async getStatistics(orgId: string, id: string) {

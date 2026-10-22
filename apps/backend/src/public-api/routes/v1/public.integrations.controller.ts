@@ -15,7 +15,10 @@ import { GetOrgFromRequest } from '@gitroom/nestjs-libraries/user/org.from.reque
 import { Organization } from '@prisma/client';
 import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.service';
 import { CheckPolicies } from '@gitroom/backend/services/auth/permissions/permissions.ability';
-import { PostsService } from '@gitroom/nestjs-libraries/database/prisma/posts/posts.service';
+import {
+  PostsService,
+  parsePostAnalyticsIds,
+} from '@gitroom/nestjs-libraries/database/prisma/posts/posts.service';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { UploadFactory } from '@gitroom/nestjs-libraries/upload/upload.factory';
 import { MediaService } from '@gitroom/nestjs-libraries/database/prisma/media/media.service';
@@ -101,6 +104,34 @@ export class PublicIntegrationsController {
   ) {
     Sentry.metrics.count("public_api-request", 1);
     return { date: await this._postsService.findFreeDateTime(org.id, id) };
+  }
+
+  // Both post analytics routes must stay above /analytics/:integration, which
+  // would otherwise capture /analytics/posts as an integration id.
+  // Not rate limited: the throttler only meters /public/v1/posts and
+  // /public/v1/upload (see throttler.provider.ts). Provider calls are cached.
+  @Get('/analytics/posts')
+  async getPostsAnalytics(
+    @GetOrgFromRequest() org: Organization,
+    @Query('ids') ids: string | string[],
+    @Query('date') date = '30'
+  ) {
+    Sentry.metrics.count("public_api-request", 1);
+    return this._postsService.checkPostsAnalytics(
+      org.id,
+      parsePostAnalyticsIds(ids),
+      +date
+    );
+  }
+
+  @Get('/analytics/post/:postId')
+  async getPostAnalytics(
+    @GetOrgFromRequest() org: Organization,
+    @Param('postId') postId: string,
+    @Query('date') date = '30'
+  ) {
+    Sentry.metrics.count("public_api-request", 1);
+    return this._postsService.checkPostAnalytics(org.id, postId, +date);
   }
 
   @Get('/analytics/:integration')
