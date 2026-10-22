@@ -12,6 +12,7 @@ import axios from 'axios';
 import { YoutubeSettingsDto } from '@gitroom/nestjs-libraries/dtos/posts/providers-settings/youtube.settings.dto';
 import {
   BadBody,
+  RefreshToken,
   SocialAbstract,
 } from '@gitroom/nestjs-libraries/integrations/social.abstract';
 import * as process from 'node:process';
@@ -200,6 +201,30 @@ const clientAndYoutube = () => {
 
   return { client, youtube, oauth2, youtubeAnalytics };
 };
+
+// Per-video daily metrics (YouTube Analytics API v2, video reports).
+const YOUTUBE_POST_METRICS: Array<{
+  metric: string;
+  label: string;
+  average?: boolean;
+}> = [
+  { metric: 'views', label: 'Views' },
+  { metric: 'estimatedMinutesWatched', label: 'Estimated Minutes Watched' },
+  {
+    metric: 'averageViewDuration',
+    label: 'Average View Duration',
+    average: true,
+  },
+  {
+    metric: 'averageViewPercentage',
+    label: 'Average View Percentage',
+    average: true,
+  },
+  { metric: 'likes', label: 'Likes' },
+  { metric: 'comments', label: 'Comments' },
+  { metric: 'shares', label: 'Shares' },
+  { metric: 'subscribersGained', label: 'Subscribers Gained' },
+];
 
 @Rules('YouTube must have on video attachment, it cannot be empty')
 export class YoutubeProvider extends SocialAbstract implements SocialProvider {
@@ -704,6 +729,94 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
 
       return acc;
     } catch (err) {
+      return [];
+    }
+  }
+
+  /**
+   * Per-video analytics. Upstream (gitroomhq/postiz-app 5cca81e0) only returns a
+   * same-day snapshot from videos.list; this fork asks the YouTube Analytics API
+   * for a daily series filtered to the one video (yt-analytics.readonly is
+   * already in `scopes`). Analytics data lags 1-3 days, so a video with no
+   * Analytics rows yet falls back to upstream's lifetime snapshot.
+   */
+  async postAnalytics(
+    integrationId: string,
+    accessToken: string,
+    postId: string,
+    date: number
+  ): Promise<AnalyticsData[]> {
+    const endDate = dayjs().format('YYYY-MM-DD');
+    const startDate = dayjs().subtract(date, 'day').format('YYYY-MM-DD');
+
+    try {
+      const { client, youtube, youtubeAnalytics } = clientAndYoutube();
+      client.setCredentials({ access_token: accessToken });
+
+      const { data } = await youtubeAnalytics(client).reports.query({
+        ids: 'channel==MINE',
+        startDate,
+        endDate,
+        metrics: YOUTUBE_POST_METRICS.map((m) => m.metric).join(','),
+        dimensions: 'day',
+        filters: `video==${postId}`,
+        sort: 'day',
+      });
+
+      const columns = (data?.columnHeaders || []).map((p) => p.name || '');
+      const rows = (data?.rows || []).map((row) =>
+        columns.reduce((acc, column, index) => {
+          acc[column] = row[index];
+          return acc;
+        }, {} as Record<string, any>)
+      );
+
+      if (rows.length) {
+        return YOUTUBE_POST_METRICS.filter(({ metric }) =>
+          columns.includes(metric)
+        ).map(({ metric, label, average }) => ({
+          label,
+          percentageChange: 0,
+          ...(average ? { average: true } : {}),
+          data: rows.map((row) => ({
+            total: String(row[metric] ?? 0),
+            date: String(row.day),
+          })),
+        }));
+      }
+
+      // No Analytics rows yet (new video): upstream's videos.list snapshot.
+      const response = await youtube(client).videos.list({
+        part: ['statistics'],
+        id: [postId],
+      });
+      const stats = response.data.items?.[0]?.statistics;
+      if (!stats) {
+        return [];
+      }
+      return (
+        [
+          ['Views', stats.viewCount],
+          ['Likes', stats.likeCount],
+          ['Comments', stats.commentCount],
+        ] as const
+      )
+        .filter(([, value]) => value !== undefined && value !== null)
+        .map(([label, value]) => ({
+          label,
+          percentageChange: 0,
+          data: [{ total: String(value), date: endDate }],
+        }));
+    } catch (err: any) {
+      // Expired or revoked token: checkPostAnalytics refreshes it and retries
+      // once (upstream 96b78476). Nothing from the response is forwarded.
+      if (err?.response?.status === 401 || err?.code === 401) {
+        throw new RefreshToken(this.identifier, '{}', '{}');
+      }
+      console.error(
+        '[youtube] post analytics failed:',
+        err?.response?.status || err?.code || 'unknown error'
+      );
       return [];
     }
   }
