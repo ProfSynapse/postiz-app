@@ -40,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: ['20.17.0']
+        node-version: ['22.23.4']
 
     steps:
       - uses: actions/checkout@v4
@@ -51,9 +51,8 @@ jobs:
           node-version: ${{ matrix.node-version }}
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v2
+        uses: pnpm/action-setup@v4
         with:
-          version: 8
           run_install: false
 
       - name: Get pnpm store directory
@@ -71,7 +70,7 @@ jobs:
             ${{ runner.os }}-pnpm-
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Generate Prisma client
         run: pnpm prisma generate --schema=libraries/nestjs-libraries/src/database/prisma/schema.prisma
@@ -82,9 +81,10 @@ jobs:
       # blast-radius minimal.
       - name: Run unit tests
         run: |
-          npx jest \
+          pnpm exec jest \
             --selectProjects nestjs-libraries cron \
             --testPathPattern 'media\.janitor|path\.confinement|media\.path\.resolver|clock\.service|clock\.restriction|post\.image\.parser|posts\.service\.update-media' \
+            --maxWorkers=2 \
             --reporters=default \
             --reporters=jest-junit
         env:
@@ -97,7 +97,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: ['20.17.0']
+        node-version: ['22.23.4']
 
     services:
       postgres:
@@ -129,9 +129,8 @@ jobs:
           node-version: ${{ matrix.node-version }}
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v2
+        uses: pnpm/action-setup@v4
         with:
-          version: 8
           run_install: false
 
       - name: Get pnpm store directory
@@ -148,7 +147,7 @@ jobs:
             ${{ runner.os }}-pnpm-
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Generate Prisma client
         run: pnpm prisma generate --schema=libraries/nestjs-libraries/src/database/prisma/schema.prisma
@@ -158,7 +157,7 @@ jobs:
 
       - name: Run integration suite
         run: |
-          npx jest \
+          pnpm exec jest \
             --selectProjects media-janitor-integration \
             --reporters=default \
             --reporters=jest-junit \

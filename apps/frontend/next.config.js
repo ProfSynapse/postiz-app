@@ -4,6 +4,8 @@ import { withSentryConfig } from '@sentry/nextjs';
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   experimental: {
+    cpus: 2,
+    webpackMemoryOptimizations: true,
     proxyTimeout: 90_000,
   },
   // Document-Policy header for browser profiling
