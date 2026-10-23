@@ -19,7 +19,7 @@ export const Button: FC<
     loading?: boolean;
     innerClassName?: string;
   }
-> = ({ children, loading, innerClassName, ...props }) => {
+> = ({ children, loading, innerClassName, secondary, ...props }) => {
   const ref = useRef<HTMLButtonElement | null>(null);
   const [height, setHeight] = useState<number | null>(null);
   useEffect(() => {
@@ -33,7 +33,7 @@ export const Button: FC<
       className={clsx(
         (props.disabled || loading) && 'opacity-50 pointer-events-none',
         `${
-          props.secondary ? 'bg-third' : 'bg-forth text-white'
+          secondary ? 'bg-third' : 'bg-forth text-white'
         } px-[24px] h-[40px] cursor-pointer items-center justify-center flex relative`,
         props?.className
       )}

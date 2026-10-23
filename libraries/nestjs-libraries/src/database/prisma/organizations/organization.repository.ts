@@ -1,9 +1,9 @@
 import { PrismaRepository } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { Role, SubscriptionTier } from '@prisma/client';
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable } from '@nestjs/common';
+import { randomBytes } from 'node:crypto';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
 import { CreateOrgUserDto } from '@gitroom/nestjs-libraries/dtos/auth/create.org.user.dto';
-import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 
 @Injectable()
 export class OrganizationRepository {
@@ -111,9 +111,21 @@ export class OrganizationRepository {
         id: orgId,
       },
       data: {
-        apiKey: AuthService.fixedEncryption(makeId(20)),
+        apiKey: randomBytes(32).toString('hex'),
       },
     });
+  }
+
+  async regenerateApiKey(orgId: string, previousKey: string | null) {
+    const apiKey = randomBytes(32).toString('hex');
+    const result = await this._organization.model.organization.updateMany({
+      where: { id: orgId, apiKey: previousKey },
+      data: { apiKey },
+    });
+    if (result.count !== 1) {
+      throw new ConflictException('The API key changed. Refresh settings and try again.');
+    }
+    return { apiKey };
   }
 
   async getOrgsByUserId(userId: string) {
@@ -218,7 +230,7 @@ export class OrganizationRepository {
     return this._organization.model.organization.create({
       data: {
         name: body.company,
-        apiKey: AuthService.fixedEncryption(makeId(20)),
+        apiKey: randomBytes(32).toString('hex'),
         allowTrial: true,
         isTrailing: true,
         users: {
