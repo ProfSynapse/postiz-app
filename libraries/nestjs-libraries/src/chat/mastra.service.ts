@@ -12,7 +12,7 @@ export class MastraService {
         await Promise.all([
           import('@mastra/core/mastra'),
           import('@mastra/core/logger'),
-          import('@gitroom/nestjs-libraries/chat/mastra.store'),
+          import('./mastra.store'),
         ]);
 
       MastraService.mastra = new Mastra({

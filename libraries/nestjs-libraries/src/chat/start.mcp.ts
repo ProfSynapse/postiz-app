@@ -1,11 +1,12 @@
 import { INestApplication } from '@nestjs/common';
-import { Request, Response } from 'express';
+import { Request, Response, Router, RequestHandler } from 'express';
 import { MastraService } from '@gitroom/nestjs-libraries/chat/mastra.service';
 import { MCPServer } from '@mastra/mcp';
 import { randomUUID } from 'crypto';
 import { OrganizationService } from '@gitroom/nestjs-libraries/database/prisma/organizations/organization.service';
 import { runWithContext } from './async.storage';
-export const startMcp = async (app: INestApplication) => {
+import { isMcpInputWithinLimits, MCP_MAX_BODY_BYTES } from './mcp.request.limits';
+export const startMcp = async (app: INestApplication, router?: Router) => {
   const mastraService = app.get(MastraService, { strict: false });
   const organizationService = app.get(OrganizationService, { strict: false });
 
@@ -20,9 +21,7 @@ export const startMcp = async (app: INestApplication) => {
     agents: { postiz: agent },
   });
 
-  app.use(
-    '/mcp/:id',
-    async (req: Request, res: Response) => {
+  const handler = async (req: Request, res: Response) => {
       // @ts-ignore
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', '*');
@@ -42,6 +41,18 @@ export const startMcp = async (app: INestApplication) => {
         return ;
       }
 
+      // Nest has already parsed JSON with its bounded body parser. Do not
+      // let the adapter fall back to reading an unbounded, unparsed stream.
+      if (req.method === 'POST' && (!req.is('application/json') || req.body === undefined)) {
+        res.status(415).send('MCP requests require application/json');
+        return;
+      }
+
+      if (!isMcpInputWithinLimits(req.body)) {
+        res.status(413).send('MCP request input exceeds validation limits');
+        return;
+      }
+
       const url = new URL(
         `/mcp/${req.params.id}`,
         process.env.NEXT_PUBLIC_BACKEND_URL
@@ -53,6 +64,7 @@ export const startMcp = async (app: INestApplication) => {
           url,
           httpPath: url.pathname,
           options: {
+            maxRequestBodySize: MCP_MAX_BODY_BYTES,
             sessionIdGenerator: () => {
               return randomUUID();
             },
@@ -61,6 +73,10 @@ export const startMcp = async (app: INestApplication) => {
           res,
         });
       });
-    }
-  );
+  };
+  const middleware: RequestHandler = (req, res, next) => {
+    void handler(req, res).catch(next);
+  };
+  if (router) router.use('/:id', middleware);
+  else app.use('/mcp/:id', middleware);
 };

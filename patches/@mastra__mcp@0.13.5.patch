@@ -1,0 +1,70 @@
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -3006,7 +3006,7 @@
+             `startHTTP: Handling GET request for existing session ${sessionId}. Calling transport.handleRequest.`
+           );
+         }
+-        const body = req.method === "POST" ? await new Promise((resolve, reject) => {
++        const body = req.method === "POST" ? await (req.body !== void 0 ? Promise.resolve(req.body) : new Promise((resolve, reject) => {
+           let data = "";
+           req.on("data", (chunk) => data += chunk);
+           req.on("end", () => {
+@@ -3017,12 +3017,12 @@
+             }
+           });
+           req.on("error", reject);
+-        }) : void 0;
++        })) : void 0;
+         await transport.handleRequest(req, res, body);
+       } else {
+         this.logger.debug(`startHTTP: No existing Streamable HTTP session ID found. ${req.method}`);
+         if (req.method === "POST") {
+-          const body = await new Promise((resolve, reject) => {
++          const body = await (req.body !== void 0 ? Promise.resolve(req.body) : new Promise((resolve, reject) => {
+             let data = "";
+             req.on("data", (chunk) => data += chunk);
+             req.on("end", () => {
+@@ -3033,7 +3033,7 @@
+               }
+             });
+             req.on("error", reject);
+-          });
++          }));
+           const { isInitializeRequest } = await import('@modelcontextprotocol/sdk/types.js');
+           if (isInitializeRequest(body)) {
+             this.logger.debug("startHTTP: Received Streamable HTTP initialize request, creating new transport.");
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -3013,7 +3013,7 @@
+             `startHTTP: Handling GET request for existing session ${sessionId}. Calling transport.handleRequest.`
+           );
+         }
+-        const body = req.method === "POST" ? await new Promise((resolve, reject) => {
++        const body = req.method === "POST" ? await (req.body !== void 0 ? Promise.resolve(req.body) : new Promise((resolve, reject) => {
+           let data = "";
+           req.on("data", (chunk) => data += chunk);
+           req.on("end", () => {
+@@ -3024,12 +3024,12 @@
+             }
+           });
+           req.on("error", reject);
+-        }) : void 0;
++        })) : void 0;
+         await transport.handleRequest(req, res, body);
+       } else {
+         this.logger.debug(`startHTTP: No existing Streamable HTTP session ID found. ${req.method}`);
+         if (req.method === "POST") {
+-          const body = await new Promise((resolve, reject) => {
++          const body = await (req.body !== void 0 ? Promise.resolve(req.body) : new Promise((resolve, reject) => {
+             let data = "";
+             req.on("data", (chunk) => data += chunk);
+             req.on("end", () => {
+@@ -3040,7 +3040,7 @@
+               }
+             });
+             req.on("error", reject);
+-          });
++          }));
+           const { isInitializeRequest } = await import('@modelcontextprotocol/sdk/types.js');
+           if (isInitializeRequest(body)) {
+             this.logger.debug("startHTTP: Received Streamable HTTP initialize request, creating new transport.");

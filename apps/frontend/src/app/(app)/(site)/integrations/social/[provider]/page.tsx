@@ -1,13 +1,15 @@
 import { ContinueIntegration } from '@gitroom/frontend/components/launches/continue.integration';
 export const dynamic = 'force-dynamic';
 export default async function Page({
-  params: { provider },
+  params,
   searchParams,
 }: {
-  params: {
+  params: Promise<{
     provider: string;
-  };
-  searchParams: any;
+  }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  return <ContinueIntegration searchParams={searchParams} provider={provider} />;
+  const { provider } = await params;
+  const query = await searchParams;
+  return <ContinueIntegration searchParams={query} provider={provider} />;
 }

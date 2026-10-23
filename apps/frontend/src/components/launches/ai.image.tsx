@@ -1,7 +1,7 @@
 import { Button } from '@gitroom/react/form/button';
 import { FC, useCallback, useState } from 'react';
 import clsx from 'clsx';
-import Loading from 'react-loading';
+import Loading from '@gitroom/react/helpers/loading.spinner';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useLaunchStore } from '@gitroom/frontend/components/new-launch/store';

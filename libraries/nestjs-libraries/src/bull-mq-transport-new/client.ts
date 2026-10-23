@@ -91,7 +91,7 @@ export class BullMqClient extends ClientProxy {
   }
 
   async dispatchEvent(packet: ReadPacket<any>): Promise<any> {
-    console.log('event to dispatch: ', packet);
+    console.log('event to dispatch:', packet.pattern);
     const queue = this.getQueue(packet.pattern);
     if (packet?.data?.options?.every) {
       const { every, immediately } = packet.data.options;
