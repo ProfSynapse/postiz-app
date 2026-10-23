@@ -49,8 +49,7 @@ const nextConfig = {
     return [
       {
         source: '/api/uploads/:path*',
-        destination:
-          process.env.STORAGE_PROVIDER === 'local' ? '/uploads/:path*' : '/404',
+        destination: '/uploads/:path*',
         permanent: true,
       },
     ];
@@ -59,10 +58,7 @@ const nextConfig = {
     return [
       {
         source: '/uploads/:path*',
-        destination:
-          process.env.STORAGE_PROVIDER === 'local'
-            ? '/api/uploads/:path*'
-            : '/404',
+        destination: '/api/uploads/:path*',
       },
     ];
   },

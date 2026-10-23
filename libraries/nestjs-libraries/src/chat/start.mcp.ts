@@ -5,6 +5,7 @@ import { MCPServer } from '@mastra/mcp';
 import { randomUUID } from 'crypto';
 import { OrganizationService } from '@gitroom/nestjs-libraries/database/prisma/organizations/organization.service';
 import { runWithContext } from './async.storage';
+import { isMcpInputWithinLimits, MCP_MAX_BODY_BYTES } from './mcp.request.limits';
 export const startMcp = async (app: INestApplication) => {
   const mastraService = app.get(MastraService, { strict: false });
   const organizationService = app.get(OrganizationService, { strict: false });
@@ -42,6 +43,11 @@ export const startMcp = async (app: INestApplication) => {
         return ;
       }
 
+      if (!isMcpInputWithinLimits(req.body)) {
+        res.status(413).send('MCP request input exceeds validation limits');
+        return;
+      }
+
       const url = new URL(
         `/mcp/${req.params.id}`,
         process.env.NEXT_PUBLIC_BACKEND_URL
@@ -53,6 +59,7 @@ export const startMcp = async (app: INestApplication) => {
           url,
           httpPath: url.pathname,
           options: {
+            maxRequestBodySize: MCP_MAX_BODY_BYTES,
             sessionIdGenerator: () => {
               return randomUUID();
             },

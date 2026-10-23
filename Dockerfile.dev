@@ -15,7 +15,7 @@ WORKDIR /app
 COPY . /app
 COPY var/docker/nginx.conf /etc/nginx/nginx.conf
 
-RUN pnpm install --frozen-lockfile
-RUN NODE_OPTIONS="--max-old-space-size=4096" pnpm run build
+RUN NODE_OPTIONS="--max-old-space-size=2048" pnpm install --frozen-lockfile --network-concurrency=4 --child-concurrency=2
+RUN NODE_OPTIONS="--max-old-space-size=3072" NEXT_TELEMETRY_DISABLED=1 pnpm run build
 
 CMD ["sh", "-c", "nginx && pnpm run pm2"]

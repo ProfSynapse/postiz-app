@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, mkdir, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -37,6 +37,7 @@ describe('Next 15 request APIs and runtime compatibility', () => {
     const directory = await mkdtemp(path.join(tmpdir(), 'postiz-media-'));
     try {
       process.env.UPLOAD_DIRECTORY = directory;
+      process.env.STORAGE_PROVIDER = 'local';
       await writeFile(path.join(directory, 'sample.txt'), 'media fixture');
       const response = await GET({} as any, { params: Promise.resolve({ path: ['sample.txt'] }) });
       expect(response.status).toBe(200);
@@ -44,6 +45,27 @@ describe('Next 15 request APIs and runtime compatibility', () => {
       expect(response.headers.get('content-length')).toBe('13');
       expect(response.headers.get('content-type')).toContain('text/plain');
       expect((await GET({} as any, { params: Promise.resolve({}) })).status).toBe(404);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  it('checks local storage at request time and confines download paths and symlinks', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'postiz-download-'));
+    const root = path.join(directory, 'uploads');
+    try {
+      await mkdir(root);
+      await writeFile(path.join(directory, 'outside.txt'), 'outside dummy fixture');
+      await symlink(path.join(directory, 'outside.txt'), path.join(root, 'escape.txt'));
+      await writeFile(path.join(root, 'inside.txt'), 'inside');
+      process.env.UPLOAD_DIRECTORY = root;
+      process.env.STORAGE_PROVIDER = 'local';
+      for (const segments of [['..', 'outside.txt'], ['escape.txt'], ['missing.txt']]) {
+        expect((await GET({} as any, { params: Promise.resolve({ path: segments }) })).status).toBe(404);
+      }
+      process.env.STORAGE_PROVIDER = 'cloudflare';
+      expect((await GET({} as any, { params: Promise.resolve({ path: ['inside.txt'] }) })).status).toBe(404);
+      process.env.STORAGE_PROVIDER = 'local';
+      const response = await GET({} as any, { params: Promise.resolve({ path: ['inside.txt'] }) });
+      expect(await response.text()).toBe('inside');
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 

@@ -21,3 +21,20 @@ dist
 .git
 .github
 reports
+
+# Runtime data and credentials must never enter the build context.
+**/.env
+**/.env.*
+/uploads
+/public/uploads
+/apps/frontend/public/uploads
+/var/uploads
+**/docker-data
+**/.ssh
+**/.aws
+**/.npmrc.local
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.tsbuildinfo
