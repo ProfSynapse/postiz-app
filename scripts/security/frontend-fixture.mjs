@@ -17,13 +17,17 @@ const backend = createServer(async (req, res) => {
   let raw = '';
   for await (const c of req) { raw += c; if (raw.length > 102400) return send(res, {}, 413); }
   let body = {}; try { body = JSON.parse(raw || '{}'); } catch {}
-  receipts.push({ method: req.method, path: url.pathname, authMatched: req.headers.auth === 'fixture-auth', organizationMatched: req.headers.showorg === 'fixture-org', oauthStateMatched: body.state === 'fixture-state', oauthCodeMatched: body.code === 'fixture-code', resetTokenMatched: body.token === 'fixture-reset-token' });
+  receipts.push({ method: req.method, path: url.pathname, authMatched: req.headers.auth === 'fixture-auth', organizationMatched: req.headers.showorg === 'fixture-org', oauthStateMatched: body.state === 'fixture-state', oauthCodeMatched: body.code === 'fixture-code', oauthRefreshMatched: body.refresh === 'true', resetTokenMatched: body.token === 'fixture-reset-token' });
   await writeFile('/receipts/frontend-requests.json', JSON.stringify(receipts, null, 2));
   if (url.pathname === '/auth/can-register') return send(res, { register: false });
   if (url.pathname === '/user/self') return send(res, user);
   if (url.pathname === '/user/organizations') return send(res, [{ id: 'fixture-org', name: 'Disposable fixture', role: 'ADMIN' }]);
   if (url.pathname === '/public/posts/fixture-post') return send(res, [{ id: 'fixture-post', content: 'Offline preview fixture', publishDate: '2026-10-25T12:30:00.000Z', image: '[]', integration: { name: 'Fixture account', profile: 'fixture', providerIdentifier: 'linkedin', picture: '/postiz.svg' } }]);
   if (url.pathname.endsWith('/comments')) return send(res, { comments: [], users: [] });
+  if (url.pathname === '/posts' && req.method === 'GET') return send(res, { posts: [], comments: [] });
+  if (['/sets', '/tags', '/customers'].includes(url.pathname) && req.method === 'GET') return send(res, []);
+  if (url.pathname === '/signatures/default' && req.method === 'GET') return send(res, {});
+  if (url.pathname === '/auth/forgot-return' && req.method === 'POST') return send(res, { reset: body.token === 'fixture-reset-token' });
   if (url.pathname === '/integrations/list') return send(res, { integrations: [] });
   if (url.pathname === '/copilot/chat' && body.operationName === 'availableAgents') return send(res, { data: { availableAgents: { agents: [] } } });
   if (url.pathname === '/posts/find-slot') return send(res, { date: '2026-10-25T12:30:00.000Z' });

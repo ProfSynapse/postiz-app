@@ -9,7 +9,7 @@ import {
   useState,
 } from 'react';
 import { clsx } from 'clsx';
-import ReactLoading from 'react-loading';
+import ReactLoading from '@gitroom/react/helpers/loading.spinner';
 export const Button: FC<
   DetailedHTMLProps<
     ButtonHTMLAttributes<HTMLButtonElement>,

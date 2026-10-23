@@ -1,6 +1,6 @@
 'use client';
 
-import ReactLoading from 'react-loading';
+import ReactLoading from '@gitroom/react/helpers/loading.spinner';
 import { FC } from 'react';
 export const LoadingComponent: FC<{
   width?: number;

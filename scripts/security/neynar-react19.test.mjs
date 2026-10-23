@@ -10,6 +10,7 @@ test('Neynar context renders with the Next App Router React runtime', () => {
   // No provider, popup, account or network operation is invoked.
   Module._load = function (id, ...args) {
     if (id === 'react') return react;
+    if (id === '@gitroom/react/helpers/loading.spinner') return require('../../libraries/react-shared-libraries/src/helpers/loading.spinner.tsx');
     if (id === 'react/jsx-runtime') return require('next/dist/compiled/react/jsx-runtime');
     if (id === 'react/jsx-dev-runtime') return require('next/dist/compiled/react/jsx-dev-runtime');
     return load.call(this, id, ...args);
@@ -24,5 +25,9 @@ test('Neynar context renders with the Next App Router React runtime', () => {
     }
     const output = renderToString(react.createElement(NeynarContextProvider, { settings: { clientId: 'offline-fixture', defaultTheme: Theme.Dark } }, react.createElement(Child)));
     assert.ok(output.includes('offline-context'));
+    require('ts-node').register({ project: 'scripts/security/tsconfig.json', transpileOnly: true });
+    const { Button } = require('../../libraries/react-shared-libraries/src/form/button.tsx');
+    // A real loading button previously returned bundled React16 elements (#525).
+    assert.ok(renderToString(react.createElement(Button, { loading: true }, 'Fixture')).includes('aria-label="Loading"'));
   } finally { Module._load = load; }
 });

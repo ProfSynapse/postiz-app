@@ -549,9 +549,6 @@ importers:
       react-i18next:
         specifier: ^15.5.2
         version: 15.7.4(i18next@25.7.3(typescript@5.5.4))(react-dom@18.3.1(react@18.3.1))(react-native@0.83.1(@babel/core@7.28.5)(@types/react@18.3.1)(bufferutil@4.1.0)(react@18.3.1)(utf-8-validate@5.0.10))(react@18.3.1)(typescript@5.5.4)
-      react-loading:
-        specifier: ^2.0.3
-        version: 2.0.3(prop-types@15.8.1)(react@18.3.1)
       react-sortablejs:
         specifier: ^6.1.4
         version: 6.1.4(@types/sortablejs@1.15.9)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(sortablejs@1.15.6)
@@ -14606,12 +14603,6 @@ packages:
 
   react-lifecycles-compat@3.0.4:
     resolution: {integrity: sha512-fBASbA6LnOU9dOU2eW7aQ8xmYBSXUIWr+UmF9b1efZBazGNO+rcXT/icdKnYm2pTwcRylVUYwW7H1PHfLekVzA==}
-
-  react-loading@2.0.3:
-    resolution: {integrity: sha512-Vdqy79zq+bpeWJqC+xjltUjuGApyoItPgL0vgVfcJHhqwU7bAMKzysfGW/ADu6i0z0JiOCRJjo+IkFNkRNbA3A==}
-    peerDependencies:
-      prop-types: ^15.6.0
-      react: '>=0.14.0'
 
   react-markdown@10.1.0:
     resolution: {integrity: sha512-qKxVopLT/TyA6BX3Ue5NwabOsAzm0Q7kAPwq6L+wWDwisYs7R8vZ0nRXqq6rkueboxpkjvLGU9fWifiX/ZZFxQ==}
@@ -36235,11 +36226,6 @@ snapshots:
       - '@types/react'
 
   react-lifecycles-compat@3.0.4: {}
-
-  react-loading@2.0.3(prop-types@15.8.1)(react@18.3.1):
-    dependencies:
-      prop-types: 15.8.1
-      react: 18.3.1
 
   react-markdown@10.1.0(@types/react@18.3.1)(react@18.3.1):
     dependencies:
