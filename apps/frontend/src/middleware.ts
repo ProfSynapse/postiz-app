@@ -13,7 +13,14 @@ acceptLanguage.languages(languages);
 
 // This function can be marked `async` if using `await` inside
 export async function middleware(request: NextRequest) {
-  const nextUrl = request.nextUrl;
+  // Next may construct its URL with the internal listen address behind a proxy.
+  // Redirects use the existing trusted public configuration, never request Host.
+  const nextUrl = request.nextUrl.clone();
+  if (process.env.FRONTEND_URL) {
+    const publicUrl = new URL(process.env.FRONTEND_URL);
+    nextUrl.protocol = publicUrl.protocol;
+    nextUrl.host = publicUrl.host;
+  }
   const authCookie =
     request.cookies.get('auth') ||
     request.headers.get('auth') ||
@@ -43,7 +50,7 @@ export async function middleware(request: NextRequest) {
     return topResponse;
   }
   // If the URL is logout, delete the cookie and redirect to login
-  if (nextUrl.href.indexOf('/auth/logout') > -1) {
+  if (nextUrl.pathname === '/auth/logout') {
     const response = NextResponse.redirect(
       new URL('/auth/login', nextUrl.href)
     );
@@ -64,7 +71,7 @@ export async function middleware(request: NextRequest) {
 
   const org = nextUrl.searchParams.get('org');
   const url = new URL(nextUrl).search;
-  if (nextUrl.href.indexOf('/auth') === -1 && !authCookie) {
+  if (!nextUrl.pathname.startsWith('/auth') && !authCookie) {
     const providers = ['google', 'settings'];
     const findIndex = providers.find((p) => nextUrl.href.indexOf(p) > -1);
     const additional = !findIndex
@@ -82,10 +89,10 @@ export async function middleware(request: NextRequest) {
   }
 
   // If the url is /auth and the cookie exists, redirect to /
-  if (nextUrl.href.indexOf('/auth') > -1 && authCookie) {
+  if (nextUrl.pathname.startsWith('/auth') && authCookie) {
     return NextResponse.redirect(new URL(`/${url}`, nextUrl.href));
   }
-  if (nextUrl.href.indexOf('/auth') > -1 && !authCookie) {
+  if (nextUrl.pathname.startsWith('/auth') && !authCookie) {
     if (org) {
       const redirect = NextResponse.redirect(new URL(`/`, nextUrl.href));
       redirect.cookies.set('org', org, {

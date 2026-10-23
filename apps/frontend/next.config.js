@@ -4,6 +4,8 @@ import { withSentryConfig } from '@sentry/nextjs';
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   experimental: {
+    cpus: 2,
+    webpackMemoryOptimizations: true,
     proxyTimeout: 90_000,
   },
   // Document-Policy header for browser profiling
@@ -47,8 +49,7 @@ const nextConfig = {
     return [
       {
         source: '/api/uploads/:path*',
-        destination:
-          process.env.STORAGE_PROVIDER === 'local' ? '/uploads/:path*' : '/404',
+        destination: '/uploads/:path*',
         permanent: true,
       },
     ];
@@ -57,10 +58,7 @@ const nextConfig = {
     return [
       {
         source: '/uploads/:path*',
-        destination:
-          process.env.STORAGE_PROVIDER === 'local'
-            ? '/api/uploads/:path*'
-            : '/404',
+        destination: '/api/uploads/:path*',
       },
     ];
   },

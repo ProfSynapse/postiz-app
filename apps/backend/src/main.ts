@@ -11,7 +11,8 @@ import { initializeSentry } from '@gitroom/nestjs-libraries/sentry/initialize.se
 initializeSentry('backend', true);
 
 import { loadSwagger } from '@gitroom/helpers/swagger/load.swagger';
-import { json } from 'express';
+import { json, Router } from 'express';
+import { mountMcpRouter } from '../../../libraries/nestjs-libraries/src/chat/mcp.router';
 
 process.env.TZ = 'UTC';
 
@@ -104,6 +105,11 @@ async function start() {
 
   loadSwagger(app);
 
+  // Mount before Nest installs its final 404 handler. MCP can initialize in
+  // the background later without placing its route after that handler.
+  // Parse only MCP here so Stripe's raw-body handling remains independent.
+  const mcpRouter = mountMcpRouter(app);
+
   const port = process.env.PORT || 3000;
 
   Logger.log(`Starting backend HTTP listener on port ${port}`, 'Bootstrap');
@@ -117,18 +123,18 @@ async function start() {
   checkConfiguration(); // Do this last, so that users will see obvious issues at the end of the startup log without having to scroll up.
 
   Logger.log(`🚀 Backend is running on: http://localhost:${port}`);
-  void startMcpAfterListen(app);
+  void startMcpAfterListen(app, mcpRouter);
 }
 
-async function startMcpAfterListen(app: INestApplication) {
+async function startMcpAfterListen(app: INestApplication, router: ReturnType<typeof Router>) {
   // MCP/Mastra startup has previously hung during deployment. Keep it off the
   // critical HTTP readiness path; the copilot routes can still initialize it
   // lazily on request if this background startup times out.
   const mcpPromise = (async () => {
     const { startMcp } = await import(
-      '@gitroom/nestjs-libraries/chat/start.mcp'
+      '../../../libraries/nestjs-libraries/src/chat/start.mcp'
     );
-    await startMcp(app);
+    await startMcp(app, router);
   })();
 
   try {

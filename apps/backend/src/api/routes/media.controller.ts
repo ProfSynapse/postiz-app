@@ -10,6 +10,7 @@ import {
   Res,
   UploadedFile,
   UseInterceptors,
+  UseFilters,
   UsePipes,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
@@ -25,9 +26,11 @@ import { UploadFactory } from '@gitroom/nestjs-libraries/upload/upload.factory';
 import { SaveMediaInformationDto } from '@gitroom/nestjs-libraries/dtos/media/save.media.information.dto';
 import { VideoDto } from '@gitroom/nestjs-libraries/dtos/videos/video.dto';
 import { VideoFunctionDto } from '@gitroom/nestjs-libraries/dtos/videos/video.function.dto';
+import { MulterExceptionFilter, POSTIZ_MULTIPART_LIMITS } from '@gitroom/nestjs-libraries/upload/multer.exception.filter';
 
 @ApiTags('Media')
 @Controller('/media')
+@UseFilters(new MulterExceptionFilter())
 export class MediaController {
   private storage = UploadFactory.createStorage();
   constructor(
@@ -85,7 +88,7 @@ export class MediaController {
   }
 
   @Post('/upload-server')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(FileInterceptor('file', { limits: POSTIZ_MULTIPART_LIMITS }))
   @UsePipes(new CustomFileValidationPipe())
   async uploadServer(
     @GetOrgFromRequest() org: Organization,
@@ -124,7 +127,7 @@ export class MediaController {
   }
 
   @Post('/upload-simple')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(FileInterceptor('file', { limits: POSTIZ_MULTIPART_LIMITS }))
   async uploadSimple(
     @GetOrgFromRequest() org: Organization,
     @UploadedFile('file') file: Express.Multer.File,

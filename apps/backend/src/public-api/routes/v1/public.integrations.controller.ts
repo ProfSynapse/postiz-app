@@ -9,6 +9,7 @@ import {
   Query,
   UploadedFile,
   UseInterceptors,
+  UseFilters,
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { GetOrgFromRequest } from '@gitroom/nestjs-libraries/user/org.from.request';
@@ -34,9 +35,11 @@ import axios from 'axios';
 import { Readable } from 'stream';
 import { lookup } from 'mime-types';
 import * as Sentry from '@sentry/nestjs';
+import { MulterExceptionFilter, POSTIZ_MULTIPART_LIMITS } from '@gitroom/nestjs-libraries/upload/multer.exception.filter';
 
 @ApiTags('Public API')
 @Controller('/public/v1')
+@UseFilters(new MulterExceptionFilter())
 export class PublicIntegrationsController {
   private storage = UploadFactory.createStorage();
   
@@ -47,7 +50,7 @@ export class PublicIntegrationsController {
   ) {}
 
   @Post('/upload')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(FileInterceptor('file', { limits: POSTIZ_MULTIPART_LIMITS }))
   async uploadSimple(
     @GetOrgFromRequest() org: Organization,
     @UploadedFile('file') file: Express.Multer.File

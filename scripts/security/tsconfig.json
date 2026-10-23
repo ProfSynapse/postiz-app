@@ -1,0 +1,4 @@
+{
+  "extends": "../../libraries/nestjs-libraries/tsconfig.spec.json",
+  "compilerOptions": { "jsx": "react-jsx" }
+}

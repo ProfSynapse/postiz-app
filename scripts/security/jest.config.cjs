@@ -1,0 +1,35 @@
+module.exports = {
+  rootDir: '../..',
+  testEnvironment: 'node',
+  maxWorkers: 2,
+  transform: {
+    '^.+\\.[tj]sx?$': ['ts-jest', {
+      tsconfig: 'scripts/security/tsconfig.json',
+      diagnostics: false,
+    }],
+  },
+  moduleNameMapper: {
+    '^@gitroom/backend/(.*)$': '<rootDir>/apps/backend/src/$1',
+    '^@gitroom/cron/(.*)$': '<rootDir>/apps/cron/src/$1',
+    '^@gitroom/frontend/(.*)$': '<rootDir>/apps/frontend/src/$1',
+    '^@gitroom/helpers/(.*)$': '<rootDir>/libraries/helpers/src/$1',
+    '^@gitroom/nestjs-libraries/(.*)$': '<rootDir>/libraries/nestjs-libraries/src/$1',
+    '^@gitroom/react/(.*)$': '<rootDir>/libraries/react-shared-libraries/src/$1',
+    '^@gitroom/workers/(.*)$': '<rootDir>/apps/workers/src/$1',
+  },
+  testMatch: [
+    '<rootDir>/scripts/security/*.spec.ts',
+    '<rootDir>/apps/backend/src/api/routes/health.controller.spec.ts',
+    '<rootDir>/apps/cron/src/tasks/*.spec.ts',
+    '<rootDir>/libraries/nestjs-libraries/src/boot/*.spec.ts',
+    '<rootDir>/libraries/nestjs-libraries/src/bull-mq-transport-new/*.spec.ts',
+    '<rootDir>/libraries/nestjs-libraries/src/redis/*.spec.ts',
+    '<rootDir>/libraries/nestjs-libraries/src/upload/*.spec.ts',
+    '<rootDir>/libraries/nestjs-libraries/src/integrations/auth-token-expiry.spec.ts',
+    '<rootDir>/libraries/nestjs-libraries/src/integrations/social.abstract.spec.ts',
+    '<rootDir>/libraries/nestjs-libraries/src/integrations/social/linkedin*.spec.ts',
+    '<rootDir>/libraries/nestjs-libraries/src/integrations/social/youtube*.spec.ts',
+    '<rootDir>/libraries/nestjs-libraries/src/database/prisma/integrations/*.spec.ts',
+    '<rootDir>/libraries/nestjs-libraries/src/database/prisma/media/media.janitor.service.spec.ts',
+  ],
+};

@@ -42,7 +42,7 @@ export class LoadToolsService {
     const [{ Agent }, { Memory }, { getMastraStore }] = await Promise.all([
       import('@mastra/core/agent'),
       import('@mastra/memory'),
-      import('@gitroom/nestjs-libraries/chat/mastra.store'),
+      import('./mastra.store'),
     ]);
 
     return new Agent({
