@@ -52,7 +52,7 @@ Classification: runtime-feature-unverified. High range entries: 1 → 0. Final v
 
 MCP/Mastra may use the Node HTTP adapter; request authority/Host and static-file prerequisites depend on adapter configuration. Postiz passes existing Nest req/res to Mastra instead of serveStatic.
 
-Keep on patched 1.x and verify actual Mastra HTTP interface.
+Patched1.x; real SDK/Mastra socket sessions and final Nest MCP endpoint pass. Standalone Hono static-file/OAuth adapters are not configured or exercised.
 
 Exact prior route example: . → @modelcontextprotocol/sdk → @hono/node-server.
 
@@ -76,7 +76,7 @@ Classification: runtime. High range entries: 5 → 0. Final versions: 1.32.1.
 
 start.mcp.ts mounts authenticated /mcp/:id using Mastra MCPServer; per-session transport/server routing matters. URI-template issue needs exploded resource templates; OAuth leak needs HTTP authProvider; experimental task issue needs taskStore (not configured). Validation exhaustion requires untrusted tool arrays/records; version upgrade alone does not enable the optional limit.
 
-Patch every SDK1 copy; cap parsed JSON body100KiB,10000 elements and depth64 before Mastra Zod validation. A checked pnpm patch to Mastra0.13.5 uses pre-parsed Nest req.body instead of rereading an ended raw stream; Postiz rejects unparsed/non-JSON POSTs. Real concurrent SDK sessions, valid/invalid tool calls and input rejection pass on local HTTP. Final-image actual application MCP listing is tracked separately.
+Patch every SDK1 copy; cap parsed JSON body100KiB,10000 elements and depth64 before Mastra Zod validation. A checked pnpm patch to Mastra0.13.5 uses pre-parsed Nest req.body instead of rereading an ended raw stream; Postiz rejects unparsed/non-JSON POSTs. Real concurrent SDK sessions, valid/invalid tool calls and input rejection pass on local HTTP. Final Alpine image also passes actual Nest MCP startup, organization-key lookup and tool listing without executing publishing tools. Relative lazy imports, an early router mount and a named scoped parser preserve compiled imports, route reachability and ordinary JSON/raw-body parsing.
 
 Exact prior route example: . → @modelcontextprotocol/sdk.
 

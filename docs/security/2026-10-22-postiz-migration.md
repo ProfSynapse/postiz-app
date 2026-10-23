@@ -1,5 +1,8 @@
 # October 2026 Postiz security migration
 
+> Round2 validation supersedes the original pending image/UI/high-triage gates below: see [round2 validation](2026-10-22-postiz-round2-validation.md) and [queue handoff](2026-10-22-postiz-queue-handoff.md). Owner account acceptance/rollout and24 residual high entries remain open.
+
+
 This branch prepares a migration from deployed source `ebe8f341f9e3395d893909e083f8ae26c41aeef2`. It does not deploy it. Production runtime verification, full build checks and rollout approval remain required.
 
 ## Runtime and framework changes
