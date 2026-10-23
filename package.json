@@ -79,7 +79,7 @@
     "@nestjs/swagger": "^7.3.0",
     "@nestjs/throttler": "^6.3.0",
     "@neynar/nodejs-sdk": "^3.112.0",
-    "@neynar/react": "^0.9.7",
+    "@neynar/react": "1.2.22",
     "@pigment-css/react": "0.0.31",
     "@postiz/wallets": "^0.0.1",
     "@prisma/client": "6.5.0",
