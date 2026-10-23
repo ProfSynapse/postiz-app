@@ -143,6 +143,7 @@ export class OrganizationRepository {
             userId,
           },
           select: {
+            userId: true,
             disabled: true,
             role: true,
           },
