@@ -72,7 +72,8 @@ async function main() {
       await writeFile('/receipts/queue-before-restart.json', JSON.stringify(await inventory(), null, 2));
       console.log(JSON.stringify({ phase, prisma: 'real create/read/relation/rollback passed', bcrypt: 'real DB hash roundtrip passed', redisLocks: 'NX and owner-only release passed', duplicateWhilePending: 'deduplicated', waitingBeforePause: 1, delayed: 1, schedulers: 1, queuesPaused: true, prefix: 'bull', db: 0 }));
     } else {
-      assert.deepEqual(await inventory(), JSON.parse(await readFile('/receipts/queue-before-restart.json', 'utf8')));
+      const beforeRestart = JSON.parse(await readFile('/receipts/queue-before-restart.json', 'utf8'));
+      assert.deepEqual(await inventory(), beforeRestart);
       assert.equal(await prisma.user.count(), 1);
       server = new BullMqServer();
       let releaseActive: () => void;
@@ -100,8 +101,13 @@ async function main() {
       await until(async () => (await post.getActiveCount()) === 1);
       await post.pause();
       assert.equal(await post.getActiveCount(), 1); // pause does not stop active work
+      // Recurring post/plug handlers emit their current ID before returning.
+      // BullMQ does not create a future successor while that ID is active.
+      await producer.dispatchEvent({ pattern: 'post', data: { id: 'fixture-wait', options: { delay: 3600000 }, payload: { id: 'fixture-wait' } } });
+      assert.equal(await post.getDelayedCount(), 1); // only fixture-delay
       releaseActive!();
       await until(async () => (await post.getActiveCount()) === 0);
+      assert.equal(await post.getJob('fixture-wait'), undefined);
       assert.ok(await post.isPaused());
       await post.resume();
       await (await post.getJob('fixture-delay'))!.promote();
@@ -113,7 +119,8 @@ async function main() {
       await producer.dispatchEvent({ pattern: 'post', data: { id: 'fixture-wait', options: {}, payload: { id: 'fixture-wait' } } });
       await until(async () => (await prisma.media.count({ where: { name: 'fixture-wait' } })) === 2);
       assert.equal((await cron.getJobSchedulers()).length, 1);
-      console.log(JSON.stringify({ phase, restartInventory: 'exact IDs/timestamps/delayed scores/pause flags/scheduler preserved by RDB', handlers: 'real BullMqServer + producer + Prisma; 2 workers at concurrency1', activeDrain: 'global pause allowed active job to finish; active0 observed before resume', deepHealth: 'all four probes passed', repeatRecreatedNext: true, replayAfterCompletion: 'same job ID consumed twice; not exactly-once' }));
+      assert.ok(Number((await cron.getJobSchedulers())[0].next) > Number(beforeRestart.schedulers[0].next));
+      console.log(JSON.stringify({ phase, restartInventory: 'exact IDs/timestamps/delayed scores/pause flags/scheduler preserved by RDB', handlers: 'real BullMqServer + producer + Prisma; 2 workers at concurrency1', activeDrain: 'global pause allowed active job to finish; active0 observed before resume', activeSameIdSuccessor: 'deduplicated; no future job retained after completion', deepHealth: 'all four probes passed', repeatRecreatedNext: true, replayAfterCompletion: 'same job ID consumed twice; not exactly-once' }));
     }
   } finally {
     if (server) {

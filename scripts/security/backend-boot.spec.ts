@@ -21,7 +21,9 @@ import { startMcp } from '@gitroom/nestjs-libraries/chat/start.mcp';
 it('boots the backend HTTP listener before starting MCP, with external providers mocked', async () => {
   const calls: string[] = [];
   const app = {
-    useGlobalPipes: jest.fn(), use: jest.fn(), useGlobalFilters: jest.fn(),
+    useGlobalPipes: jest.fn(), use: jest.fn((...args) => {
+      if (args[0] === '/mcp') calls.push('mcp-router-mounted');
+    }), useGlobalFilters: jest.fn(),
     listen: jest.fn(async () => { calls.push('listen'); }),
   };
   const create = jest.spyOn(NestFactory, 'create').mockResolvedValue(app as any);
@@ -29,11 +31,11 @@ it('boots the backend HTTP listener before starting MCP, with external providers
   (startMcp as jest.Mock).mockImplementation(async () => { calls.push('mcp'); });
   try {
     await import('../../apps/backend/src/main');
-    for (let i = 0; i < 8 && calls.length < 2; i++) await new Promise(setImmediate);
+    for (let i = 0; i < 8 && calls.length < 3; i++) await new Promise(setImmediate);
     expect(create).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({ rawBody: true }));
     expect(app.useGlobalPipes).toHaveBeenCalledTimes(1);
     expect(app.useGlobalFilters).toHaveBeenCalledTimes(2);
-    expect(calls).toEqual(['listen', 'mcp']);
-    expect(startMcp).toHaveBeenCalledWith(app);
+    expect(calls).toEqual(['mcp-router-mounted', 'listen', 'mcp']);
+    expect(startMcp).toHaveBeenCalledWith(app, expect.any(Function));
   } finally { create.mockRestore(); log.mockRestore(); }
 });

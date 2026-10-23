@@ -1,12 +1,12 @@
 import { INestApplication } from '@nestjs/common';
-import { Request, Response } from 'express';
+import { Request, Response, Router, RequestHandler } from 'express';
 import { MastraService } from '@gitroom/nestjs-libraries/chat/mastra.service';
 import { MCPServer } from '@mastra/mcp';
 import { randomUUID } from 'crypto';
 import { OrganizationService } from '@gitroom/nestjs-libraries/database/prisma/organizations/organization.service';
 import { runWithContext } from './async.storage';
 import { isMcpInputWithinLimits, MCP_MAX_BODY_BYTES } from './mcp.request.limits';
-export const startMcp = async (app: INestApplication) => {
+export const startMcp = async (app: INestApplication, router?: Router) => {
   const mastraService = app.get(MastraService, { strict: false });
   const organizationService = app.get(OrganizationService, { strict: false });
 
@@ -21,9 +21,7 @@ export const startMcp = async (app: INestApplication) => {
     agents: { postiz: agent },
   });
 
-  app.use(
-    '/mcp/:id',
-    async (req: Request, res: Response) => {
+  const handler = async (req: Request, res: Response) => {
       // @ts-ignore
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', '*');
@@ -75,6 +73,10 @@ export const startMcp = async (app: INestApplication) => {
           res,
         });
       });
-    }
-  );
+  };
+  const middleware: RequestHandler = (req, res, next) => {
+    void handler(req, res).catch(next);
+  };
+  if (router) router.use('/:id', middleware);
+  else app.use('/mcp/:id', middleware);
 };

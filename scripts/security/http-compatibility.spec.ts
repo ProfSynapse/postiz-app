@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { Controller, Module, Post, UploadedFile, UseInterceptors, UseFilters } from '@nestjs/common';
+import { Body, Controller, Module, Post, Req, UploadedFile, UseInterceptors, UseFilters } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { FileInterceptor } from '@nestjs/platform-express';
 import axios from 'axios';
@@ -11,11 +11,17 @@ import sharp from 'sharp';
 import { LocalStorage } from '../../libraries/nestjs-libraries/src/upload/local.storage';
 import { isMcpInputWithinLimits } from '../../libraries/nestjs-libraries/src/chat/mcp.request.limits';
 import { MulterExceptionFilter, POSTIZ_MULTIPART_LIMITS } from '../../libraries/nestjs-libraries/src/upload/multer.exception.filter';
+import { mountMcpRouter } from '../../libraries/nestjs-libraries/src/chat/mcp.router';
 
 let storage: LocalStorage;
 @Controller()
 @UseFilters(new MulterExceptionFilter())
 class UploadFixture {
+  @Post('/json-echo')
+  echo(@Body() body: any, @Req() req: any) {
+    return { body, raw: req.rawBody?.toString() };
+  }
+
   @Post('/upload-small-limit')
   @UseInterceptors(FileInterceptor('file', { limits: { ...POSTIZ_MULTIPART_LIMITS, fileSize: 64 } }))
   uploadSmall(@UploadedFile() file: Express.Multer.File) {
@@ -63,7 +69,9 @@ describe('patched outbound and multipart HTTP interfaces (real local sockets)', 
     });
     await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
     base = `http://127.0.0.1:${(server.address() as any).port}`;
-    app = await NestFactory.create(FixtureModule, { logger: false });
+    app = await NestFactory.create(FixtureModule, { logger: false, rawBody: true });
+    const mcpRouter = mountMcpRouter(app);
+    mcpRouter.post('/:id', (req, res) => { res.json({ body: req.body }); });
     await app.listen(0, '127.0.0.1');
     upload = await app.getUrl();
   });
@@ -86,6 +94,18 @@ describe('patched outbound and multipart HTTP interfaces (real local sockets)', 
     for await (const chunk of stream.data) chunks.push(chunk);
     expect(Buffer.concat(chunks)).toEqual(png);
     await expect(axios.get(base + '/missing', { proxy: false })).rejects.toMatchObject({ response: { status: 404 } });
+  });
+
+  it('retains normal JSON and raw-body parsing after mounting the MCP parser', async () => {
+    const result = await axios.post(upload + '/json-echo', { fixture: true });
+    expect(result.data).toEqual({ body: { fixture: true }, raw: '{"fixture":true}' });
+  });
+
+  it('parses MCP JSON with its own byte ceiling through the early router', async () => {
+    const good = await axios.post(upload + '/mcp/fixture', { fixture: true });
+    expect(good.data).toEqual({ body: { fixture: true } });
+    const large = await fetch(upload + '/mcp/fixture', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'x'.repeat(102401) }) });
+    expect(large.status).toBe(413);
   });
 
   it('downloads redirected media through the actual LocalStorage Axios path', async () => {
