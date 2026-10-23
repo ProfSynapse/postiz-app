@@ -11,6 +11,24 @@ import { SocialAbstract } from '@gitroom/nestjs-libraries/integrations/social.ab
 import { FacebookDto } from '@gitroom/nestjs-libraries/dtos/posts/providers-settings/facebook.dto';
 import { DribbbleDto } from '@gitroom/nestjs-libraries/dtos/posts/providers-settings/dribbble.dto';
 
+// Per-post insights need a Graph version that knows the media-view metrics.
+const FACEBOOK_POST_INSIGHTS_VERSION = 'v23.0';
+// Lifetime post metrics -> public label. post_impressions* are deprecated.
+const FACEBOOK_POST_METRICS: Record<string, string> = {
+  post_total_media_view_unique: 'Reach',
+  post_media_view: 'Views',
+  post_clicks: 'Clicks',
+  post_reactions_by_type_total: 'Reactions',
+};
+// video_insights metrics (videos and reels; Meta omits the ones that don't apply).
+const FACEBOOK_VIDEO_METRICS: Record<string, string> = {
+  total_video_views: 'Views',
+  fb_reels_total_plays: 'Plays',
+  total_video_reactions_by_type_total: 'Reactions',
+  post_video_likes_by_reaction_type: 'Reactions',
+  post_video_social_actions: 'Engagement',
+};
+
 export class FacebookProvider extends SocialAbstract implements SocialProvider {
   identifier = 'facebook';
   name = 'Facebook Page';
@@ -485,5 +503,150 @@ export class FacebookProvider extends SocialAbstract implements SocialProvider {
         })),
       })) || []
     );
+  }
+
+  /**
+   * Per-post insights. Ported from upstream gitroomhq/postiz-app 5cca81e0 and
+   * its fixes (9948b072, b64b2c00: video_insights for bare video ids) and
+   * adapted to the current metrics used by this fork's Page analytics (#22):
+   * post_impressions* were removed by Meta in 2026, so reach and views come
+   * from post_total_media_view_unique and post_media_view.
+   *
+   * The stored releaseId shape tells the post type apart: feed posts are
+   * `{pageId}_{postId}`, videos are a bare video id with no `insights` edge.
+   */
+  async postAnalytics(
+    integrationId: string,
+    accessToken: string,
+    postId: string,
+    date: number
+  ): Promise<AnalyticsData[]> {
+    const today = dayjs().format('YYYY-MM-DD');
+    const video = !postId.includes('_');
+    const metrics = video ? FACEBOOK_VIDEO_METRICS : FACEBOOK_POST_METRICS;
+
+    try {
+      const rows = await this.loadPostInsights(
+        accessToken,
+        postId,
+        video ? 'video_insights' : 'insights',
+        Object.keys(metrics)
+      );
+      // Deleted posts and comment posts have no insights; their engagement
+      // fields would fail the same way.
+      if (rows === null) return [];
+
+      const totals = new Map<string, number>();
+      for (const row of rows) {
+        const label = metrics[row?.name];
+        const value = row?.values?.[0]?.value;
+        if (!label) continue;
+        // *_by_type metrics are objects keyed by reaction/action type.
+        const total =
+          value && typeof value === 'object'
+            ? Object.values(value as Record<string, number>).reduce(
+                (sum: number, v) => sum + (Number(v) || 0),
+                0
+              )
+            : Number(value);
+        if (!Number.isFinite(total)) continue;
+        // Video and reels variants of the same measure share one label.
+        totals.set(label, Math.max(totals.get(label) ?? 0, total));
+      }
+
+      if (!video) {
+        const engagement = await this.loadPostEngagement(accessToken, postId);
+        for (const [label, value] of Object.entries(engagement)) {
+          if (Number.isFinite(value)) totals.set(label, value);
+        }
+      }
+
+      return [...totals].map(([label, total]) => ({
+        label,
+        percentageChange: 0,
+        lifetime: true,
+        data: [{ total: String(total), date: today }],
+      }));
+    } catch (err) {
+      console.error('[facebook] post insights request failed');
+      return [];
+    }
+  }
+
+  /**
+   * Insights rows for the requested metrics, or null when the object or the
+   * edge does not exist (deleted post, comment post), since no single metric
+   * could succeed then.
+   */
+  private async loadPostInsights(
+    accessToken: string,
+    postId: string,
+    edge: 'insights' | 'video_insights',
+    metrics: string[]
+  ): Promise<any[] | null> {
+    const response = await fetch(
+      `https://graph.facebook.com/${FACEBOOK_POST_INSIGHTS_VERSION}/${encodeURIComponent(
+        postId
+      )}/${edge}?${new URLSearchParams({ metric: metrics.join(',') })}`,
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(10000),
+      }
+    );
+    const body = await response.json().catch(() => ({}));
+    if (response.ok && Array.isArray(body?.data)) return body.data;
+    // Code 100 also covers "nonexisting field (insights)" and "object does
+    // not exist" (subcode 33); a per-metric retry cannot fix either.
+    if (
+      body?.error?.error_subcode === 33 ||
+      /nonexisting field|does not exist/i.test(body?.error?.message || '')
+    ) {
+      return null;
+    }
+    // One invalid metric makes Meta reject the whole request (see #22): retry
+    // the metrics one by one and keep the ones that succeed.
+    if (body?.error?.code === 100 && metrics.length > 1) {
+      const rows: any[] = [];
+      for (const metric of metrics) {
+        rows.push(
+          ...((await this.loadPostInsights(accessToken, postId, edge, [
+            metric,
+          ])) ?? [])
+        );
+      }
+      return rows;
+    }
+    console.error(
+      `[facebook] post ${edge} metric ${
+        metrics.length === 1 ? metrics[0] : 'batch'
+      } failed: ${body?.error?.code || response.status}`
+    );
+    return [];
+  }
+
+  private async loadPostEngagement(
+    accessToken: string,
+    postId: string
+  ): Promise<Record<string, number>> {
+    const response = await fetch(
+      `https://graph.facebook.com/${FACEBOOK_POST_INSIGHTS_VERSION}/${encodeURIComponent(
+        postId
+      )}?${new URLSearchParams({
+        fields: 'shares,comments.summary(true).limit(0)',
+      })}`,
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(10000),
+      }
+    );
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) return {};
+    return {
+      ...(Number.isFinite(body?.comments?.summary?.total_count)
+        ? { Comments: body.comments.summary.total_count }
+        : {}),
+      // `shares` is omitted entirely when a post has never been shared.
+      Shares: Number(body?.shares?.count ?? 0),
+    };
   }
 }

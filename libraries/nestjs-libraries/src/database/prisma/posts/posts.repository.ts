@@ -210,6 +210,8 @@ export class PostsRepository {
         content: true,
         publishDate: true,
         releaseURL: true,
+        // The platform's own post/video id, so API clients can key on it.
+        releaseId: true,
         submittedForOrganizationId: true,
         submittedForOrderId: true,
         state: true,
@@ -612,6 +614,23 @@ export class PostsRepository {
       data: {
         lastMessageId: messageId,
       },
+    });
+  }
+
+  /**
+   * Posts for per-post analytics. Scoped to the caller's organization on both
+   * the post and its channel, and never returns deleted posts, so an id from
+   * another organization resolves to nothing.
+   */
+  getPostsForAnalytics(orgId: string, ids: string[]) {
+    return this._post.model.post.findMany({
+      where: {
+        id: { in: ids },
+        organizationId: orgId,
+        deletedAt: null,
+        integration: { organizationId: orgId, deletedAt: null },
+      },
+      include: { integration: true },
     });
   }
 

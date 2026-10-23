@@ -415,6 +415,107 @@ export class LinkedinPageProvider
     }));
   }
 
+  /**
+   * Per-post statistics. Ported from upstream gitroomhq/postiz-app 5cca81e0
+   * (lifetime-only since upstream 60ffa4df: LinkedIn rejects timeIntervals for
+   * specific posts) and adapted: /rest/posts returns either a share or a
+   * ugcPost URN (video/document posts), and each needs its own query
+   * parameter. Uses this fork's LinkedIn-Version fallback.
+   */
+  async postAnalytics(
+    integrationId: string,
+    accessToken: string,
+    postId: string,
+    date: number
+  ): Promise<AnalyticsData[]> {
+    const param = postId.startsWith('urn:li:share:')
+      ? 'shares'
+      : postId.startsWith('urn:li:ugcPost:')
+      ? 'ugcPosts'
+      : '';
+    if (!param) return [];
+
+    const headers = (version: string) => ({
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'LinkedIn-Version': version,
+        'X-Restli-Protocol-Version': '2.0.0',
+      },
+    });
+    const today = dayjs().format('YYYY-MM-DD');
+
+    try {
+      const response = await linkedInFetchWithFallback(
+        `https://api.linkedin.com/v2/organizationalEntityShareStatistics?q=organizationalEntity&organizationalEntity=${encodeURIComponent(
+          `urn:li:organization:${integrationId}`
+        )}&${param}=List(${encodeURIComponent(postId)})`,
+        {},
+        headers
+      );
+      if (!response.ok) {
+        console.error(
+          `[linkedin-page] post statistics failed: ${response.status}`
+        );
+        return [];
+      }
+      const { elements }: { elements?: PostShareStatElement[] } =
+        await response.json();
+      const stats = (elements || []).find(
+        (e) => e?.share === postId || e?.ugcPost === postId
+      )?.totalShareStatistics;
+
+      if (stats) {
+        return (
+          [
+            ['Impressions', stats.impressionCount],
+            ['Unique Impressions', stats.uniqueImpressionsCount],
+            ['Clicks', stats.clickCount],
+            ['Likes', stats.likeCount],
+            ['Comments', stats.commentCount],
+            ['Shares', stats.shareCount],
+            ['Engagement', stats.engagement],
+          ] as const
+        )
+          .filter(([, value]) => Number.isFinite(value))
+          .map(([label, value]) => ({
+            label,
+            percentageChange: 0,
+            ...(label === 'Engagement' ? { average: true } : {}),
+            lifetime: true,
+            data: [{ total: String(value), date: today }],
+          }));
+      }
+
+      // Posts with no impressions/actions yet are left out of `elements`;
+      // socialActions still has the live like/comment counts.
+      const actions = await linkedInFetchWithFallback(
+        `https://api.linkedin.com/v2/socialActions/${encodeURIComponent(
+          postId
+        )}`,
+        {},
+        headers
+      );
+      if (!actions.ok) return [];
+      const social: SocialActionsResponse = await actions.json();
+      return (
+        [
+          ['Likes', social?.likesSummary?.totalLikes],
+          ['Comments', social?.commentsSummary?.totalFirstLevelComments],
+        ] as const
+      )
+        .filter(([, value]) => Number.isFinite(value))
+        .map(([label, value]) => ({
+          label,
+          percentageChange: 0,
+          lifetime: true,
+          data: [{ total: String(value), date: today }],
+        }));
+    } catch (err) {
+      console.error('[linkedin-page] post statistics request failed');
+      return [];
+    }
+  }
+
   @Plug({
     identifier: 'linkedin-page-autoRepostPost',
     title: 'Auto Repost Posts',
@@ -767,4 +868,32 @@ export interface MobileInsightsPageViews {
 export interface TimeRange {
   start: number;
   end: number;
+}
+
+// Post analytics interfaces (upstream 5cca81e0)
+export interface PostShareStatElement {
+  organizationalEntity: string;
+  share?: string;
+  ugcPost?: string;
+  totalShareStatistics: {
+    uniqueImpressionsCount?: number;
+    shareCount?: number;
+    engagement?: number;
+    clickCount?: number;
+    likeCount?: number;
+    impressionCount?: number;
+    commentCount?: number;
+  };
+  timeRange?: TimeRange;
+}
+
+export interface SocialActionsResponse {
+  likesSummary?: {
+    totalLikes: number;
+    likedByCurrentUser: boolean;
+  };
+  commentsSummary?: {
+    totalFirstLevelComments: number;
+    commentsState: string;
+  };
 }

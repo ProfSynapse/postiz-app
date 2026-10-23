@@ -28,6 +28,15 @@ export interface IAuthenticator {
     accessToken: string,
     date: number
   ): Promise<AnalyticsData[]>;
+  // Ported from upstream gitroomhq/postiz-app 5cca81e0 ("feat: post analytics").
+  // postId is the platform's own id for the published post (Post.releaseId).
+  // Providers without per-post insights simply omit this method.
+  postAnalytics?(
+    integrationId: string,
+    accessToken: string,
+    postId: string,
+    fromDate: number,
+  ): Promise<AnalyticsData[]>;
   changeNickname?(
     id: string,
     accessToken: string,
@@ -44,6 +53,12 @@ export interface AnalyticsData {
   label: string;
   data: Array<{ total: string; date: string }>;
   percentageChange: number;
+  // True for ratio/average series (e.g. average view duration) that must not be
+  // summed across days.
+  average?: boolean;
+  // True for a lifetime-to-date total read once (dated the day it was read)
+  // rather than a daily value. Never add it to daily points of the same label.
+  lifetime?: boolean;
 }
 
 export type GenerateAuthUrlResponse = {

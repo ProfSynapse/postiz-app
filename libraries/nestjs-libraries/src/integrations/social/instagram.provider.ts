@@ -13,6 +13,35 @@ import { InstagramDto } from '@gitroom/nestjs-libraries/dtos/posts/providers-set
 import { Integration } from '@prisma/client';
 import { Rules } from '@gitroom/nestjs-libraries/chat/rules.description.decorator';
 
+// Media insights metrics (Instagram Platform media insights reference, 2026).
+// impressions/plays/video_views were removed in 2025; views replaces them.
+const INSTAGRAM_MEDIA_LABELS: Record<string, string> = {
+  views: 'Views',
+  reach: 'Reach',
+  saved: 'Saves',
+  likes: 'Likes',
+  comments: 'Comments',
+  shares: 'Shares',
+  total_interactions: 'Total Interactions',
+  ig_reels_avg_watch_time: 'Average Watch Time (ms)',
+};
+
+export function instagramMediaMetrics(productType?: string): string[] {
+  if (productType === 'STORY') {
+    return ['views', 'reach', 'shares', 'total_interactions'];
+  }
+  const feed = [
+    'views',
+    'reach',
+    'saved',
+    'likes',
+    'comments',
+    'shares',
+    'total_interactions',
+  ];
+  return productType === 'REELS' ? [...feed, 'ig_reels_avg_watch_time'] : feed;
+}
+
 @Rules(
   "Instagram should have at least one attachment, if it's a story, it can have only one picture"
 )
@@ -796,6 +825,89 @@ export class InstagramProvider
       });
     }
     return analytics;
+  }
+
+  /**
+   * Per-media insights. Ported from upstream gitroomhq/postiz-app 5cca81e0
+   * (later moved to views in place of the deprecated impressions/plays) and
+   * adapted: the metric set follows the media product type, because Meta
+   * rejects the whole request when one metric does not apply (e.g. a Reels
+   * metric on a feed photo). Album children have no insights; we only store
+   * the album (parent) id, which Meta reports like a feed post.
+   */
+  async postAnalytics(
+    integrationId: string,
+    accessToken: string,
+    postId: string,
+    date: number,
+    type = 'graph.facebook.com'
+  ): Promise<AnalyticsData[]> {
+    const today = dayjs().format('YYYY-MM-DD');
+    const request = async (edge: string, params: Record<string, string>) => {
+      const response = await fetch(
+        `https://${type}/v21.0/${encodeURIComponent(
+          postId
+        )}${edge}?${new URLSearchParams(params)}`,
+        {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          signal: AbortSignal.timeout(10000),
+        }
+      );
+      const body = await response.json().catch(() => ({}));
+      return { ok: response.ok, body };
+    };
+
+    try {
+      const media = await request('', {
+        fields: 'media_type,media_product_type',
+      });
+      const productType = media.ok ? media.body?.media_product_type : undefined;
+      const metrics = instagramMediaMetrics(productType);
+      // Story metrics under 5 answer (#10) instead of a value, failing the
+      // whole request; a per-metric retry keeps the metrics at 5 or more.
+      const retryable = (code: unknown) =>
+        code === 100 || (productType === 'STORY' && code === 10);
+
+      const load = async (list: string[]): Promise<any[]> => {
+        const { ok, body } = await request('/insights', {
+          metric: list.join(','),
+        });
+        if (ok && Array.isArray(body?.data)) return body.data;
+        // (#100) one metric is not valid for this media: keep the others.
+        if (retryable(body?.error?.code) && list.length > 1) {
+          const rows: any[] = [];
+          for (const metric of list) rows.push(...(await load([metric])));
+          return rows;
+        }
+        if (!retryable(body?.error?.code)) {
+          console.error(
+            `[instagram] media insights failed: ${
+              body?.error?.code || 'unknown'
+            }`
+          );
+        }
+        return [];
+      };
+
+      const rows = await load(metrics);
+      const result: AnalyticsData[] = [];
+      for (const metric of metrics) {
+        const row = rows.find((r) => r?.name === metric);
+        const value = row?.values?.[0]?.value ?? row?.total_value?.value;
+        if (!Number.isFinite(value)) continue;
+        result.push({
+          label: INSTAGRAM_MEDIA_LABELS[metric],
+          percentageChange: 0,
+          ...(metric === 'ig_reels_avg_watch_time' ? { average: true } : {}),
+          lifetime: true,
+          data: [{ total: String(value), date: today }],
+        });
+      }
+      return result;
+    } catch (err) {
+      console.error('[instagram] media insights request failed');
+      return [];
+    }
   }
 
   music(accessToken: string, data: { q: string }) {
