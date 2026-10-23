@@ -43,6 +43,13 @@ export const startMcp = async (app: INestApplication) => {
         return ;
       }
 
+      // Nest has already parsed JSON with its bounded body parser. Do not
+      // let the adapter fall back to reading an unbounded, unparsed stream.
+      if (req.method === 'POST' && (!req.is('application/json') || req.body === undefined)) {
+        res.status(415).send('MCP requests require application/json');
+        return;
+      }
+
       if (!isMcpInputWithinLimits(req.body)) {
         res.status(413).send('MCP request input exceeds validation limits');
         return;

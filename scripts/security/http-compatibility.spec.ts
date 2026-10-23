@@ -16,6 +16,12 @@ let storage: LocalStorage;
 @Controller()
 @UseFilters(new MulterExceptionFilter())
 class UploadFixture {
+  @Post('/upload-small-limit')
+  @UseInterceptors(FileInterceptor('file', { limits: { ...POSTIZ_MULTIPART_LIMITS, fileSize: 64 } }))
+  uploadSmall(@UploadedFile() file: Express.Multer.File) {
+    return storage.uploadFile(file);
+  }
+
   @Post('/upload')
   @UseInterceptors(FileInterceptor('file', { limits: POSTIZ_MULTIPART_LIMITS }))
   upload(@UploadedFile() file: Express.Multer.File) {
@@ -134,6 +140,12 @@ describe('patched outbound and multipart HTTP interfaces (real local sockets)', 
     const result = await fetch(upload + '/upload', { method: 'POST', body: form });
     expect(result.status).toBe(400);
     expect(await result.json()).toMatchObject({ code: 'LIMIT_FIELD_NESTING' });
+  });
+
+  it('enforces a streaming file-size limit before local storage is invoked', async () => {
+    const form = new FormData();
+    form.append('file', new Blob([new Uint8Array(65)]), 'too-large.bin');
+    expect((await fetch(upload + '/upload-small-limit', { method: 'POST', body: form })).status).toBe(413);
   });
 });
 

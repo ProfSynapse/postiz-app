@@ -6,6 +6,10 @@ import { Response } from 'express';
 // Multer 2.5 supports the depth/index controls; the remaining controls retain
 // its documented field byte limits while bounding the number of fields.
 export const POSTIZ_MULTIPART_LIMITS = {
+  files: 1,
+  // Match the existing validator's largest supported (video) size, while
+  // enforcing a ceiling during parsing rather than after buffering the file.
+  fileSize: 1024 * 1024 * 1024,
   fieldNameSize: 100,
   fieldSize: 1024 * 1024,
   fields: 32,

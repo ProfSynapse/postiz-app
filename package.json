@@ -382,6 +382,9 @@
     },
     "onlyBuiltDependencies": [
       "bcrypt"
-    ]
+    ],
+    "patchedDependencies": {
+      "@mastra/mcp@0.13.5": "patches/@mastra__mcp@0.13.5.patch"
+    }
   }
 }
