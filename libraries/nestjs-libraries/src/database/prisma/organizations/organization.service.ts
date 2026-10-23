@@ -61,6 +61,10 @@ export class OrganizationService {
     return this._organizationRepository.updateApiKey(orgId);
   }
 
+  regenerateApiKey(orgId: string, previousKey: string | null) {
+    return this._organizationRepository.regenerateApiKey(orgId, previousKey);
+  }
+
   getTeam(orgId: string) {
     return this._organizationRepository.getTeam(orgId);
   }
