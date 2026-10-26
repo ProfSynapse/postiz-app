@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { INestApplication, MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import cookieParser from 'cookie-parser';
+import { PrismaClient, Role } from '@prisma/client';
 
 jest.mock('@gitroom/nestjs-libraries/database/prisma/stars/stars.service', () => ({ StarsService: class StarsService {} }));
 jest.mock('@gitroom/nestjs-libraries/database/prisma/organizations/organization.service', () => ({ OrganizationService: class OrganizationService {} }));
@@ -16,6 +17,7 @@ import { OrganizationRepository } from '@gitroom/nestjs-libraries/database/prism
 import { StarsService } from '@gitroom/nestjs-libraries/database/prisma/stars/stars.service';
 import { UsersService } from '@gitroom/nestjs-libraries/database/prisma/users/users.service';
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
+import { HttpExceptionFilter } from '@gitroom/nestjs-libraries/services/exception.filter';
 
 describe('organization API key regeneration over authenticated HTTP', () => {
   let app: INestApplication;
@@ -25,9 +27,32 @@ describe('organization API key regeneration over authenticated HTTP', () => {
   let actor = 'user-a';
   const origin = 'https://frontend.example.invalid';
   const previousEnv = { ...process.env };
-  const regenerateApiKey = jest.fn().mockResolvedValue({ apiKey: 'b'.repeat(64) });
+  const databaseUrl = process.env.POSTIZ_MEMBERSHIP_TEST_DATABASE_URL;
+  if (databaseUrl) {
+    const url = new URL(databaseUrl);
+    if (url.hostname !== 'postiz-membership-fixture-db' || url.pathname !== '/postiz_membership_fixture') {
+      throw new Error('Membership integration tests require the disposable fixture database.');
+    }
+  }
+  const database = databaseUrl ? new PrismaClient({ datasources: { db: { url: databaseUrl } } }) : undefined;
+  // Apply the actual repository's select projection rather than inventing the
+  // full membership shape at the service boundary. This catches missing fields
+  // required by AuthMiddleware and the regeneration permission check.
+  const model = database || {
+    organization: {
+      findMany: async ({ where, include }: any) => where.users.some.userId !== 'user-a' ? [] : [{
+        id: 'org-a', apiKey: 'a'.repeat(64),
+        users: [Object.fromEntries(Object.entries({ userId: 'user-a', role, disabled })
+          .filter(([field]) => include.users.select[field]))],
+      }],
+    },
+  };
+  const repository = new OrganizationRepository({ model } as any, {} as any, {} as any);
+  const regenerateApiKey = jest.fn(async (id: string, previousKey: string) => database
+    ? repository.regenerateApiKey(id, previousKey)
+    : { apiKey: 'b'.repeat(64) });
   const orgService = {
-    getOrgsByUserId: jest.fn(async () => [{ id: 'org-a', apiKey: 'a'.repeat(64), users: [{ userId: 'user-a', role, disabled }] }]),
+    getOrgsByUserId: (id: string) => repository.getOrgsByUserId(id),
     regenerateApiKey,
   };
 
@@ -35,6 +60,15 @@ describe('organization API key regeneration over authenticated HTTP', () => {
     process.env.FRONTEND_URL = origin;
     process.env.JWT_SECRET = 'offline-session-fixture-secret';
     delete process.env.STRIPE_PUBLISHABLE_KEY;
+    if (database) {
+      await database.organization.create({ data: {
+        id: 'org-a', name: 'Disposable membership test', apiKey: 'a'.repeat(64),
+        users: { create: { id: 'membership-a', role: 'ADMIN', user: { create: {
+          id: 'user-a', email: 'fixture@example.invalid', providerName: 'LOCAL', timezone: 0,
+        } } } },
+      } });
+      await database.organization.create({ data: { id: 'org-b', name: 'Other fixture', apiKey: 'c'.repeat(64) } });
+    }
     @Module({
       controllers: [SettingsController],
       providers: [
@@ -50,13 +84,21 @@ describe('organization API key regeneration over authenticated HTTP', () => {
     const module = await Test.createTestingModule({ imports: [FixtureModule] }).compile();
     app = module.createNestApplication({ logger: false });
     app.use(cookieParser());
+    app.useGlobalFilters(new HttpExceptionFilter());
     await app.listen(0, '127.0.0.1');
     base = await app.getUrl();
   });
-  afterAll(async () => { await app?.close(); process.env = previousEnv; });
-  beforeEach(() => { role = 'ADMIN'; disabled = false; actor = 'user-a'; regenerateApiKey.mockClear(); });
+  afterAll(async () => { await app?.close(); await database?.$disconnect(); process.env = previousEnv; });
+  beforeEach(async () => {
+    role = 'ADMIN'; disabled = false; actor = 'user-a'; regenerateApiKey.mockClear();
+    if (database) {
+      await database.organization.update({ where: { id: 'org-a' }, data: { apiKey: 'a'.repeat(64) } });
+      await database.userOrganization.update({ where: { id: 'membership-a' }, data: { role: 'ADMIN', disabled: false } });
+    }
+  });
 
-  function request({ authenticated = true, requestOrigin = origin as string | undefined, body = { confirm: true } as unknown } = {}) {
+  async function request({ authenticated = true, requestOrigin = origin as string | undefined, body = { confirm: true } as unknown } = {}) {
+    if (database) await database.userOrganization.update({ where: { id: 'membership-a' }, data: { role: role as Role, disabled } });
     return fetch(base + '/settings/api-key/regenerate', {
       method: 'POST',
       headers: {
@@ -73,12 +115,18 @@ describe('organization API key regeneration over authenticated HTTP', () => {
     const response = await request({ body: { confirm: true, orgId: 'foreign-org' } });
     expect(response.status).toBe(200);
     expect(response.headers.get('cache-control')).toBe('no-store');
-    expect(await response.json()).toEqual({ apiKey: 'b'.repeat(64) });
+    const result = await response.json();
+    expect(result).toEqual({ apiKey: expect.stringMatching(/^[a-f0-9]{64}$/) });
     expect(regenerateApiKey).toHaveBeenCalledWith('org-a', 'a'.repeat(64));
     expect(regenerateApiKey).toHaveBeenCalledTimes(1);
+    if (database) {
+      expect(await repository.getOrgByApiKey('a'.repeat(64))).toBeNull();
+      expect((await repository.getOrgByApiKey(result.apiKey))?.id).toBe('org-a');
+      expect((await repository.getOrgByApiKey('c'.repeat(64)))?.id).toBe('org-b');
+    }
   });
   it('rejects unauthenticated requests without changing a key', async () => {
-    expect((await request({ authenticated: false })).status).toBe(403);
+    expect((await request({ authenticated: false })).status).toBe(401);
     expect(regenerateApiKey).not.toHaveBeenCalled();
   });
   it('does not let the public API key authenticate a regeneration request', async () => {
@@ -87,7 +135,7 @@ describe('organization API key regeneration over authenticated HTTP', () => {
       headers: { 'content-type': 'application/json', origin, authorization: 'a'.repeat(64) },
       body: JSON.stringify({ confirm: true }),
     });
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(401);
     expect(regenerateApiKey).not.toHaveBeenCalled();
   });
   it('rejects ordinary members when billing is disabled', async () => {
@@ -97,12 +145,12 @@ describe('organization API key regeneration over authenticated HTTP', () => {
   });
   it('rejects a membership belonging to another user', async () => {
     actor = 'foreign-user';
-    expect((await request()).status).toBe(403);
+    expect((await request()).status).toBe(401);
     expect(regenerateApiKey).not.toHaveBeenCalled();
   });
   it('rejects disabled members', async () => {
     disabled = true;
-    expect((await request()).status).toBe(403);
+    expect((await request()).status).toBe(401);
     expect(regenerateApiKey).not.toHaveBeenCalled();
   });
   it.each(['https://attacker.invalid', 'null', '', origin + '.attacker.invalid'])('rejects untrusted or missing Origin %s', async (requestOrigin) => {
