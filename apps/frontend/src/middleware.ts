@@ -20,6 +20,8 @@ export async function middleware(request: NextRequest) {
     const publicUrl = new URL(process.env.FRONTEND_URL);
     nextUrl.protocol = publicUrl.protocol;
     nextUrl.host = publicUrl.host;
+    // A host without an explicit port leaves the internal URL's port intact.
+    nextUrl.port = publicUrl.port;
   }
   const authCookie =
     request.cookies.get('auth') ||

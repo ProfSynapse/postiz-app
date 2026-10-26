@@ -18,4 +18,20 @@ describe('public frontend redirects behind an internal Next listener', () => {
     const response = await middleware(new NextRequest('http://localhost:4200/private?return=/auth'));
     expect(response.headers.get('location')).toBe('https://frontend.example.invalid:8443/auth?return=/auth');
   });
+  describe('public HTTPS origin with the default port', () => {
+    beforeEach(() => { process.env.FRONTEND_URL = 'https://frontend.example.invalid'; });
+    it.each([
+      ['/', undefined, '/auth'],
+      ['/private?return=/auth', undefined, '/auth?return=/auth'],
+      ['/auth/login', 'auth=fixture', '/'],
+      ['/auth/logout', 'auth=fixture', '/auth/login'],
+      ['/modal/dark/all', undefined, '/auth/login-required'],
+      ['/', 'auth=fixture', process.env.IS_GENERAL ? '/launches' : '/analytics'],
+    ])('redirects %s without leaking the internal port', async (path, cookie, target) => {
+      const response = await middleware(new NextRequest(`http://localhost:4200${path}`, {
+        headers: { host: 'untrusted.invalid', ...(cookie ? { cookie } : {}) },
+      }));
+      expect(response.headers.get('location')).toBe(`https://frontend.example.invalid${target}`);
+    });
+  });
 });
