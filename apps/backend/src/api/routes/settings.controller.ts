@@ -1,6 +1,8 @@
-import { Body, Controller, Delete, Get, Param, Post } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, ForbiddenException, Get, Header, HttpCode, Param, Post, Req } from '@nestjs/common';
 import { GetOrgFromRequest } from '@gitroom/nestjs-libraries/user/org.from.request';
-import { Organization } from '@prisma/client';
+import { Organization, User, UserOrganization } from '@prisma/client';
+import { GetUserFromRequest } from '@gitroom/nestjs-libraries/user/user.from.request';
+import { Request } from 'express';
 import { StarsService } from '@gitroom/nestjs-libraries/database/prisma/stars/stars.service';
 import { CheckPolicies } from '@gitroom/backend/services/auth/permissions/permissions.ability';
 import { OrganizationService } from '@gitroom/nestjs-libraries/database/prisma/organizations/organization.service';
@@ -15,6 +17,38 @@ export class SettingsController {
     private _starsService: StarsService,
     private _organizationService: OrganizationService
   ) {}
+
+  @Post('/api-key/regenerate')
+  @HttpCode(200)
+  @Header('Cache-Control', 'no-store')
+  @CheckPolicies([AuthorizationActions.Create, Sections.ADMIN])
+  async regenerateApiKey(
+    @GetOrgFromRequest() org: Organization & { users: UserOrganization[] },
+    @GetUserFromRequest() user: User,
+    @Body() body: { confirm?: boolean },
+    @Req() req: Request
+  ) {
+    // Subscription policies allow all sections when billing is disabled.
+    // Enforce actual membership/role here for both hosted and self-hosted installs.
+    const membership = org?.users?.find((member) => member.userId === user?.id && !member.disabled);
+    if (!membership || !['ADMIN', 'SUPERADMIN'].includes(membership.role)) {
+      throw new ForbiddenException();
+    }
+    // Session cookies may be SameSite=None. Require the configured UI origin.
+    let origin: string;
+    try {
+      origin = new URL(process.env.FRONTEND_URL!).origin;
+    } catch {
+      throw new ForbiddenException();
+    }
+    if (!req.headers.origin || req.headers.origin !== origin) {
+      throw new ForbiddenException();
+    }
+    if (body?.confirm !== true) {
+      throw new BadRequestException('Confirm API key regeneration.');
+    }
+    return this._organizationService.regenerateApiKey(org.id, org.apiKey);
+  }
 
   @Get('/github')
   @CheckPolicies([AuthorizationActions.Create, Sections.ADMIN])
