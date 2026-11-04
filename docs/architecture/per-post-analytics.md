@@ -20,7 +20,7 @@ Series with `lifetime: true` hold one lifetime-to-date total dated the day it
 was read, not a daily value: replace the previous reading instead of adding to
 it. YouTube's daily series never carry it; its `videos.list` fallback does, so
 the same label (e.g. Views) can switch from lifetime to daily once YouTube
-Analytics has rows.
+Analytics reports positive views.
 
 ### `GET /public/v1/analytics/posts?ids=a,b,c&date=N`
 
@@ -58,7 +58,7 @@ batch route's `/posts` suffix can't land in the posts bucket
 
 | Provider | Source | Labels |
 | --- | --- | --- |
-| YouTube | YouTube Analytics `reports.query`, `filters=video==<id>`, `dimensions=day` | Views, Estimated Minutes Watched, Average View Duration*, Average View Percentage*, Likes, Comments, Shares, Subscribers Gained (daily). Until Analytics has rows (1-3 days), or when the report fails with anything but 401 (e.g. 403 missing scope, quota), upstream's `videos.list` lifetime snapshot: Views, Likes, Comments (`lifetime: true`) |
+| YouTube | YouTube Analytics `reports.query`, `filters=video==<id>`, `dimensions=day` | Views, Estimated Minutes Watched, Average View Duration*, Average View Percentage*, Likes, Comments, Shares, Subscribers Gained (daily). Until Analytics reports positive views (zero-filled rows do not count), or when the report fails with anything but 401 (e.g. 403 missing scope, quota), upstream's `videos.list` lifetime snapshot: Views, Likes, Comments (`lifetime: true`) |
 | Instagram (Facebook login and Instagram login) | `/{media-id}/insights` (v21.0), metric set by `media_product_type` | Views, Reach, Saves, Likes, Comments, Shares, Total Interactions; Reels add Average Watch Time (ms)*; Stories: Views, Reach, Shares, Total Interactions |
 | Facebook Page feed post | `/{page_post}/insights` (v23.0) + `?fields=shares,comments.summary(true)` | Reach (`post_total_media_view_unique`), Views (`post_media_view`), Clicks, Reactions, Comments, Shares |
 | Facebook Page video | `/{video-id}/video_insights` (v23.0) | Views, Plays, Reactions, Engagement |
@@ -71,3 +71,10 @@ Instagram `impressions`/`plays` metric is requested. A metric Meta rejects
 answer `#10`; those are dropped the same way. A Facebook post Meta reports as
 missing ("does not exist", subcode 33, or no `insights` edge, e.g. comment
 posts) returns `[]` without per-metric retries.
+
+## New-video zero-filled reports
+
+YouTube can return zero-filled daily rows ending before a new video was published.
+The adapter uses the lifetime snapshot until a reported day has positive views.
+Once positive daily views are available, the existing daily report behavior remains;
+recent activity can still lag Studio. This change does not make analytics real-time.
