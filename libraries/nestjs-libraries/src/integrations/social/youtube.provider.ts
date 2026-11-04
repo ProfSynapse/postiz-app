@@ -732,7 +732,7 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
    * same-day snapshot from videos.list; this fork asks the YouTube Analytics API
    * for a daily series filtered to the one video (yt-analytics.readonly is
    * already in `scopes`). Analytics data lags 1-3 days, so a video with no
-   * Analytics rows yet falls back to upstream's lifetime snapshot.
+   * reported views yet falls back to upstream's lifetime snapshot.
    */
   async postAnalytics(
     integrationId: string,
@@ -785,7 +785,12 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
         }, {} as Record<string, any>)
       );
 
-      if (rows.length) {
+      // YouTube can return a zero-filled date range ending before a new video
+      // was published. Rows alone do not establish that its views were processed.
+      const hasReportedViews = rows.some(
+        (row: Record<string, any>) => Number(row.views) > 0
+      );
+      if (hasReportedViews) {
         return YOUTUBE_POST_METRICS.filter(({ metric }) =>
           columns.includes(metric)
         ).map(({ metric, label, average }) => ({
@@ -799,7 +804,7 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
         }));
       }
 
-      // No Analytics rows yet (new video) or the report failed: upstream's
+      // No reported views yet (including zero-filled rows), or report failed:
       // videos.list snapshot. These are lifetime totals, not one day's
       // values, so they carry `lifetime: true`.
       const response = await youtube(client).videos.list({
